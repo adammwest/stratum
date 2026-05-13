@@ -1,5 +1,10 @@
 [package]
 name = "channels_sv2"
+# TODO: bump to 5.1.0 once the project's pinned Rust 1.75 toolchain can
+# write the v4 Cargo.lock format (a version change here triggers a lockfile
+# rewrite that 1.75 can't perform). The `add_shares` method added to the
+# Vardiff trait in this commit is a minor-version semver change that
+# downstream consumers should learn about via a version bump.
 version = "5.0.0"
 authors = ["The Stratum V2 Developers"]
 edition = "2021"
