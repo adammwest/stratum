@@ -384,7 +384,13 @@ fn test_try_vardiff_with_less_spm_than_expected<V: Vardiff>(vardiff: &mut V) {
             .unwrap()
             .into();
 
-    assert_eq!(hashrate_after_240s, 74.2);
+    // Was 74.2 on upstream, but that came from the `try_vardiff` fallback at
+    // `classic.rs:250` (`hashrate * realized_spm / shares_per_minute = 106*7/10 = 74.2`)
+    // which only triggers when `hash_rate_from_target` errors. Upstream's *100
+    // scaling overflowed U256 at this high-target test point. With the U512
+    // widening (target.rs) that overflow is gone, so the main path runs and
+    // returns the integer-truncated 74 from `low_u128()`.
+    assert_eq!(hashrate_after_240s, 74.0);
 
     let simulation_duration = 300;
     // testing case when realized_shares_per_minute / shares_per_minute = 0.85
@@ -399,5 +405,7 @@ fn test_try_vardiff_with_less_spm_than_expected<V: Vardiff>(vardiff: &mut V) {
         .expect("try_vardiff failed")
         .unwrap();
 
-    assert_eq!(hashrate_after_300s, 62.327995);
+    // Was 62.327995 on upstream via the same overflow-fallback path as the
+    // 74.2 value above. Now exercises the main path; integer-truncated to 62.
+    assert_eq!(hashrate_after_300s, 62.0);
 }
