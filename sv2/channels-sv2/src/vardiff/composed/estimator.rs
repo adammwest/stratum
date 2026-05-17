@@ -504,7 +504,7 @@ mod tests {
 
     #[test]
     fn hash_rate_round_trip_is_precise_after_u256_fix() {
-        use channels_sv2::target::{hash_rate_from_target, hash_rate_to_target};
+        use crate::target::{hash_rate_from_target, hash_rate_to_target};
 
         // (hashrate, configured_spm, realized_spm) — points that hit
         // the worst pre-fix inflation. Each is from the SPM=30
