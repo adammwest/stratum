@@ -3,56 +3,87 @@ use bitcoin::Target;
 use std::sync::Arc;
 use tracing::debug;
 
-/// Default minimum hashrate (H/s) if not specified.
 const DEFAULT_MIN_HASHRATE: f64 = 1.0;
 
-/// Extended Poisson-Kalman filter parameters.
+/// Discounted Gamma-Poisson vardiff parameters.
 ///
 /// State:
-///     theta = log(true_hashrate / assigned_hashrate)
+///     ratio = true_hashrate / assigned_hashrate
 ///
 /// Observation:
-///     observed_shares ~ Poisson(target_shares * exp(theta))
-const DEFAULT_INITIAL_LOG_RATIO_VARIANCE: f64 = 2.0;
-const DEFAULT_PROCESS_VARIANCE: f64 = 0.00001;
+///     observed_shares ~ Poisson(target_shares * ratio)
+///
+/// Prior/posterior:
+///     ratio ~ Gamma(alpha, beta)
+///
+/// where beta is the rate, not scale.
+const DEFAULT_PRIOR_SHARES: f64 = 4.0;
+const DEFAULT_INITIAL_RATIO: f64 = 1.0;
 
-/// Maximum absolute movement in log-ratio per observation.
-const DEFAULT_MAX_LOG_RATIO_STEP: f64 = 6.0;
+/// Exponential forgetting applied before each new observation.
+///
+/// Lower values react faster but add more jitter.
+/// Higher values are steadier but slower after real hashrate changes.
+const DEFAULT_DISCOUNT: f64 = 0.99;
+
+/// Conservative control while uncertainty is high.
+///
+/// Proposed ratio:
+///     posterior_mean - z * posterior_std
+///
+/// Use 0.0 to target posterior mean directly.
+const DEFAULT_NORMAL_CONTROL_Z: f64 = 0.19;
+
+/// Control z after a detected statistical break.
+///
+/// Usually lower than normal z so the controller moves quickly after a break.
+const DEFAULT_BREAK_CONTROL_Z: f64 = 0.073;
+
+/// Approximate posterior-predictive break detector.
+///
+/// Break test:
+///     z = (observed - predictive_mean) / sqrt(predictive_variance)
+///
+/// where:
+///     predictive_mean = target_shares * posterior_mean_ratio
+///     predictive_variance = predictive_mean
+///                         + target_shares^2 * posterior_ratio_variance
+const DEFAULT_BREAK_Z: f64 = 3.13;
+const DEFAULT_MIN_EXPECTED_SHARES_FOR_BREAK: f64 = 10.0;
+
+/// Posterior strength used when reseeding after a detected break.
+const DEFAULT_BREAK_RESET_PRIOR_SHARES: f64 = 1.1;
+
+/// Numerical clamps for the filtered ratio.
+const DEFAULT_MIN_RATIO: f64 = 1.0e-6;
+const DEFAULT_MAX_RATIO: f64 = 1.0e6;
 
 /// Maximum relative hashrate move accepted in one update.
-const DEFAULT_MAX_RELATIVE_HASHRATE_CHANGE: f64 = 10000.0;
+///
+/// 300.0 means up to roughly +30000% in one update.
+const DEFAULT_MAX_RELATIVE_HASHRATE_CHANGE: f64 = 300.0;
 
 /// Minimum relative hashrate change required to emit `Some(new_hashrate)`.
-const DEFAULT_MIN_UPDATE_RELATIVE_CHANGE: f64 = 0.08;
-
-/// Lower-bound control parameter.
-///
-/// Accuracy-first: disable lower-bound bias by default.
-/// Use the posterior mean estimate directly.
-const DEFAULT_LOWER_BOUND_Z: f64 = 0.0;
-
-/// Below this posterior log-ratio uncertainty, use the posterior mean directly.
-const DEFAULT_LOWER_BOUND_UNCERTAINTY_OFF: f64 = 0.25;
-
-/// Above this posterior log-ratio uncertainty, use the full lower-bound z.
-const DEFAULT_LOWER_BOUND_UNCERTAINTY_FULL: f64 = 0.4;
+const DEFAULT_MIN_UPDATE_RELATIVE_CHANGE: f64 = 0.285;
 
 use super::{error::VardiffError, Vardiff};
 
-/// Represents the dynamic state for an Extended Poisson-Kalman vardiff connection.
+/// Represents the dynamic state for a discounted Gamma-Poisson vardiff connection.
 ///
-/// This estimator filters:
+/// The estimator models:
 ///
-///     theta = log(true_hashrate / assigned_hashrate)
+///     observed_shares ~ Poisson(target_shares * ratio)
 ///
-/// using the Poisson observation model:
+/// where:
 ///
-///     observed_shares ~ Poisson(target_shares * exp(theta))
+///     ratio = true_hashrate / assigned_hashrate
 ///
-/// The controller normally targets the posterior mean. When posterior
-/// uncertainty is high, it targets a conservative lower confidence bound of the
-/// hashrate estimate to collect more shares. The lower-bound term decays to zero
-/// once the filter is confident.
+/// A Gamma posterior is maintained over `ratio`. Under normal conditions the
+/// posterior is discounted over time, which lets the estimator adapt without
+/// becoming permanently overconfident. A posterior-predictive z-score is used to
+/// detect statistical breaks. On break, the posterior is reseeded around the
+/// observed ratio so large hashrate jumps are handled quickly without needing a
+/// permanently jittery steady-state configuration.
 #[derive(Debug)]
 pub struct VardiffState {
     /// Count of shares received since the last filter observation.
@@ -67,37 +98,44 @@ pub struct VardiffState {
     /// Source of current time for elapsed-time computations.
     pub clock: Arc<dyn Clock>,
 
-    /// Current filtered log hashrate ratio.
-    ///
-    ///     log_ratio = log(true_hashrate / assigned_hashrate)
-    pub log_ratio: f64,
+    /// Gamma posterior shape for ratio = true_hashrate / assigned_hashrate.
+    pub ratio_alpha: f64,
 
-    /// Current variance of `log_ratio`.
-    pub log_ratio_variance: f64,
+    /// Gamma posterior rate for ratio = true_hashrate / assigned_hashrate.
+    pub ratio_beta: f64,
 
-    /// Initial variance of `log_ratio`.
-    pub initial_log_ratio_variance: f64,
+    /// Initial pseudo-share strength.
+    pub prior_shares: f64,
 
-    /// Process variance added at each observation.
-    pub process_variance: f64,
+    /// Discount factor applied before assimilating each window.
+    pub discount: f64,
 
-    /// Maximum absolute update to `log_ratio` per observation.
-    pub max_log_ratio_step: f64,
+    /// Normal-mode lower-bound z.
+    pub normal_control_z: f64,
+
+    /// Break-mode lower-bound z.
+    pub break_control_z: f64,
+
+    /// Absolute z threshold for the approximate posterior-predictive break detector.
+    pub break_z: f64,
+
+    /// Minimum predictive expected shares needed before allowing break detection.
+    pub min_expected_shares_for_break: f64,
+
+    /// Prior strength used when reseeding the posterior after a break.
+    pub break_reset_prior_shares: f64,
+
+    /// Minimum allowed ratio.
+    pub min_ratio: f64,
+
+    /// Maximum allowed ratio.
+    pub max_ratio: f64,
 
     /// Maximum relative hashrate move accepted in one update.
     pub max_relative_hashrate_change: f64,
 
     /// Minimum relative hashrate change required to return `Some(new_hashrate)`.
     pub min_update_relative_change: f64,
-
-    /// Full lower-bound z value used while uncertainty is high.
-    pub lower_bound_z: f64,
-
-    /// Below this uncertainty, lower-bound targeting is disabled.
-    pub lower_bound_uncertainty_off: f64,
-
-    /// Above this uncertainty, full lower-bound targeting is enabled.
-    pub lower_bound_uncertainty_full: f64,
 }
 
 impl std::panic::UnwindSafe for VardiffState {}
@@ -124,24 +162,32 @@ impl VardiffState {
     ) -> Result<Self, VardiffError> {
         let timestamp_secs = clock.now_secs();
 
+        let prior_shares = DEFAULT_PRIOR_SHARES.max(1.0e-12);
+        let initial_ratio = DEFAULT_INITIAL_RATIO
+            .clamp(DEFAULT_MIN_RATIO, DEFAULT_MAX_RATIO);
+
         Ok(VardiffState {
             shares_since_last_update: 0,
             timestamp_of_last_update: timestamp_secs,
             min_allowed_hashrate: (min_allowed_hashrate as f64).max(DEFAULT_MIN_HASHRATE),
             clock,
 
-            log_ratio: 0.0,
-            log_ratio_variance: DEFAULT_INITIAL_LOG_RATIO_VARIANCE,
-            initial_log_ratio_variance: DEFAULT_INITIAL_LOG_RATIO_VARIANCE,
-            process_variance: DEFAULT_PROCESS_VARIANCE,
-            max_log_ratio_step: DEFAULT_MAX_LOG_RATIO_STEP,
+            ratio_alpha: prior_shares,
+            ratio_beta: prior_shares / initial_ratio,
+
+            prior_shares,
+            discount: DEFAULT_DISCOUNT,
+            normal_control_z: DEFAULT_NORMAL_CONTROL_Z,
+            break_control_z: DEFAULT_BREAK_CONTROL_Z,
+            break_z: DEFAULT_BREAK_Z,
+            min_expected_shares_for_break: DEFAULT_MIN_EXPECTED_SHARES_FOR_BREAK,
+            break_reset_prior_shares: DEFAULT_BREAK_RESET_PRIOR_SHARES,
+
+            min_ratio: DEFAULT_MIN_RATIO,
+            max_ratio: DEFAULT_MAX_RATIO,
 
             max_relative_hashrate_change: DEFAULT_MAX_RELATIVE_HASHRATE_CHANGE,
             min_update_relative_change: DEFAULT_MIN_UPDATE_RELATIVE_CHANGE,
-
-            lower_bound_z: DEFAULT_LOWER_BOUND_Z,
-            lower_bound_uncertainty_off: DEFAULT_LOWER_BOUND_UNCERTAINTY_OFF,
-            lower_bound_uncertainty_full: DEFAULT_LOWER_BOUND_UNCERTAINTY_FULL,
         })
     }
 
@@ -150,110 +196,200 @@ impl VardiffState {
         self.shares_since_last_update = shares_since_last_update;
     }
 
-    /// Resets the filter mean to neutral after an external hashrate/difficulty update.
-    ///
-    /// Variance is intentionally retained. Resetting variance after each accepted
-    /// update makes the filter repeatedly overreact to one-window Poisson noise.
-    fn reset_log_ratio_filter(&mut self) {
-        self.log_ratio = 0.0;
-    }
-
-    /// Numerically safe exponential.
-    fn safe_exp(x: f64) -> f64 {
-        x.clamp(-50.0, 50.0).exp()
-    }
-
-    /// Effective lower-bound z value.
-    ///
-    /// This decays to zero when uncertainty is low, avoiding permanent
-    /// conservative bias in steady state.
-    fn effective_lower_bound_z(&self) -> f64 {
-        let uncertainty = self.log_ratio_variance.max(0.0).sqrt();
-
-        let off = self.lower_bound_uncertainty_off.max(0.0);
-        let full = self.lower_bound_uncertainty_full.max(off + 1e-12);
-
-        if uncertainty <= off {
-            0.0
-        } else if uncertainty >= full {
-            self.lower_bound_z
-        } else {
-            let t = (uncertainty - off) / (full - off);
-            self.lower_bound_z * t
+    /// Posterior mean of the ratio.
+    fn ratio_mean(&self) -> f64 {
+        if self.ratio_beta <= 0.0 {
+            return 1.0;
         }
+
+        (self.ratio_alpha / self.ratio_beta).clamp(self.min_ratio, self.max_ratio)
     }
 
-    /// Applies one Extended Poisson-Kalman update.
-    ///
-    /// Model:
-    ///
-    ///     y ~ Poisson(E * exp(theta))
-    ///
-    /// where:
-    ///
-    ///     y     = observed_shares
-    ///     E     = target_shares
-    ///     theta = log_ratio
-    ///
-    /// Poisson log-likelihood, ignoring constants:
-    ///
-    ///     l(theta) = y * theta - E * exp(theta)
-    ///
-    /// Gradient:
-    ///
-    ///     dl/dtheta = y - E * exp(theta)
-    ///
-    /// Negative Hessian / information:
-    ///
-    ///     -d2l/dtheta2 = E * exp(theta)
-    fn update_expkf(&mut self, observed_shares: f64, target_shares: f64) -> f64 {
-        let observed_shares = observed_shares.max(0.0);
-        let target_shares = target_shares.max(1e-12);
+    /// Posterior variance of the ratio.
+    fn ratio_variance(&self) -> f64 {
+        if self.ratio_beta <= 0.0 {
+            return self.max_ratio;
+        }
 
-        let prior_theta = self.log_ratio;
-        let prior_variance = (self.log_ratio_variance + self.process_variance).max(1e-18);
+        (self.ratio_alpha / self.ratio_beta.powi(2)).max(0.0)
+    }
 
-        let expected_shares = target_shares * Self::safe_exp(prior_theta);
+    /// Approximate posterior-predictive z-score for the current count window.
+    ///
+    /// This uses the law of total variance:
+    ///
+    ///     Var[Y] = E[Var[Y | ratio]] + Var[E[Y | ratio]]
+    ///            = target_shares * mean_ratio
+    ///            + target_shares^2 * var_ratio
+    fn predictive_z_score(&self, observed_shares: f64, target_shares: f64) -> Option<f64> {
+        let target_shares = target_shares.max(0.0);
 
-        let score = observed_shares - expected_shares;
-        let information = expected_shares.max(1e-12);
+        if target_shares <= 0.0 {
+            return None;
+        }
 
-        let posterior_variance = 1.0 / (1.0 / prior_variance + information);
+        let mean_ratio = self.ratio_mean();
+        let var_ratio = self.ratio_variance();
 
-        let raw_step = posterior_variance * score;
-        let clamped_step = raw_step.clamp(-self.max_log_ratio_step, self.max_log_ratio_step);
+        let predictive_mean = target_shares * mean_ratio;
+        let predictive_variance =
+            (predictive_mean + target_shares.powi(2) * var_ratio).max(1.0e-12);
 
-        self.log_ratio = (prior_theta + clamped_step).clamp(-50.0, 50.0);
-        self.log_ratio_variance = posterior_variance.max(1e-18);
+        Some((observed_shares - predictive_mean) / predictive_variance.sqrt())
+    }
+
+    /// Returns true when the current count is implausible under the posterior predictive model.
+    fn is_break(&self, observed_shares: f64, target_shares: f64) -> bool {
+        let mean_ratio = self.ratio_mean();
+        let predictive_expected = target_shares * mean_ratio;
+
+        if predictive_expected < self.min_expected_shares_for_break {
+            return false;
+        }
+
+        let Some(z_score) = self.predictive_z_score(observed_shares, target_shares) else {
+            return false;
+        };
+
+        z_score.abs() >= self.break_z
+    }
+
+    /// Reseeds the Gamma posterior around the observed ratio after a detected break.
+    fn reset_posterior_from_observation(&mut self, observed_shares: f64, target_shares: f64) {
+        let target_shares = target_shares.max(1.0e-12);
+        let observed_ratio = (observed_shares / target_shares)
+            .clamp(self.min_ratio, self.max_ratio);
+
+        let strength = self.break_reset_prior_shares.max(1.0e-12);
+
+        self.ratio_alpha = strength;
+        self.ratio_beta = strength / observed_ratio;
+
+        self.ratio_alpha += observed_shares.max(0.0);
+        self.ratio_beta += target_shares;
+
+        self.clamp_posterior();
 
         debug!(
             target: "vardiff",
-            "ExPKF update:
+            "Gamma-Poisson break reset:
             - Observed shares: {:.4}
             - Target shares: {:.4}
-            - Prior log-ratio: {:.6}
-            - Expected shares: {:.4}
-            - Score: {:.4}
-            - Information: {:.4}
-            - Raw step: {:.6}
-            - Clamped step: {:.6}
-            - Posterior log-ratio: {:.6}
-            - Posterior variance: {:.8}
-            - Posterior uncertainty: {:.8}",
+            - Observed ratio: {:.8}
+            - Reset alpha: {:.8}
+            - Reset beta: {:.8}
+            - Reset posterior mean ratio: {:.8}
+            - Reset posterior std ratio: {:.8}",
             observed_shares,
             target_shares,
-            prior_theta,
-            expected_shares,
-            score,
-            information,
-            raw_step,
-            clamped_step,
-            self.log_ratio,
-            self.log_ratio_variance,
-            self.log_ratio_variance.sqrt(),
+            observed_ratio,
+            self.ratio_alpha,
+            self.ratio_beta,
+            self.ratio_mean(),
+            self.ratio_variance().sqrt(),
         );
+    }
 
-        self.log_ratio
+    /// Applies one discounted Gamma-Poisson update.
+    fn update_gamma_poisson(&mut self, observed_shares: f64, target_shares: f64) {
+        let observed_shares = observed_shares.max(0.0);
+        let target_shares = target_shares.max(1.0e-12);
+
+        let discount = self.discount.clamp(0.0, 1.0);
+
+        self.ratio_alpha = self.ratio_alpha * discount + observed_shares;
+        self.ratio_beta = self.ratio_beta * discount + target_shares;
+
+        self.clamp_posterior();
+
+        debug!(
+            target: "vardiff",
+            "Gamma-Poisson update:
+            - Observed shares: {:.4}
+            - Target shares: {:.4}
+            - Discount: {:.6}
+            - Posterior alpha: {:.8}
+            - Posterior beta: {:.8}
+            - Posterior mean ratio: {:.8}
+            - Posterior std ratio: {:.8}",
+            observed_shares,
+            target_shares,
+            discount,
+            self.ratio_alpha,
+            self.ratio_beta,
+            self.ratio_mean(),
+            self.ratio_variance().sqrt(),
+        );
+    }
+
+    /// Keeps posterior values finite and inside the configured ratio range.
+    fn clamp_posterior(&mut self) {
+        if !self.ratio_alpha.is_finite() || self.ratio_alpha <= 0.0 {
+            self.ratio_alpha = self.prior_shares.max(1.0e-12);
+        }
+
+        if !self.ratio_beta.is_finite() || self.ratio_beta <= 0.0 {
+            self.ratio_beta = self.ratio_alpha / DEFAULT_INITIAL_RATIO.max(self.min_ratio);
+        }
+
+        let mean = self.ratio_alpha / self.ratio_beta;
+
+        if mean < self.min_ratio {
+            self.ratio_beta = self.ratio_alpha / self.min_ratio;
+        } else if mean > self.max_ratio {
+            self.ratio_beta = self.ratio_alpha / self.max_ratio;
+        }
+
+        self.ratio_alpha = self.ratio_alpha.max(1.0e-12);
+        self.ratio_beta = self.ratio_beta.max(1.0e-12);
+    }
+
+    /// Returns the ratio used for control.
+    ///
+    /// In normal mode, this can target a conservative lower bound. In break mode,
+    /// it usually targets the posterior mean to move quickly.
+    fn control_ratio(&self, control_z: f64) -> f64 {
+        let mean = self.ratio_mean();
+        let std = self.ratio_variance().sqrt();
+
+        (mean - control_z.max(0.0) * std).clamp(self.min_ratio, self.max_ratio)
+    }
+
+    /// Rebase the posterior after applying a hashrate update.
+    ///
+    /// If old ratio is:
+    ///
+    ///     true_hashrate / old_assigned_hashrate
+    ///
+    /// and the assigned hashrate is multiplied by `applied_ratio`, then the new
+    /// ratio is:
+    ///
+    ///     old_ratio / applied_ratio
+    ///
+    /// For a Gamma rate parameterization, scaling the random variable by
+    /// `1 / applied_ratio` is equivalent to multiplying beta by `applied_ratio`.
+    fn rebase_posterior_after_update(&mut self, applied_ratio: f64) {
+        let applied_ratio = applied_ratio
+            .clamp(self.min_ratio, self.max_ratio)
+            .max(1.0e-12);
+
+        self.ratio_beta *= applied_ratio;
+        self.clamp_posterior();
+
+        debug!(
+            target: "vardiff",
+            "Gamma-Poisson posterior rebased:
+            - Applied ratio: {:.8}
+            - Rebased alpha: {:.8}
+            - Rebased beta: {:.8}
+            - Rebased mean ratio: {:.8}
+            - Rebased std ratio: {:.8}",
+            applied_ratio,
+            self.ratio_alpha,
+            self.ratio_beta,
+            self.ratio_mean(),
+            self.ratio_variance().sqrt(),
+        );
     }
 
     /// Clamps a proposed hashrate update and decides whether it should be emitted.
@@ -283,7 +419,7 @@ impl VardiffState {
 
         debug!(
             target: "vardiff",
-            "ExPKF update policy:
+            "Gamma-Poisson update policy:
             - Proposed hashrate: {:.2} H/s
             - Current hashrate: {:.2} H/s
             - Clamped hashrate: {:.2} H/s
@@ -346,21 +482,15 @@ impl Vardiff for VardiffState {
         Ok(())
     }
 
-    /// Checks channel performance and potentially updates the estimated hashrate.
+    /// Checks channel performance and potentially updates the assigned hashrate.
     ///
-    /// This implementation filters the Poisson log-intensity ratio:
+    /// This implementation estimates:
     ///
-    ///     observed_shares ~ Poisson(target_shares * exp(log_ratio))
+    ///     ratio = true_hashrate / assigned_hashrate
     ///
-    /// The posterior mean hashrate estimate is:
-    ///
-    ///     current_hashrate * exp(log_ratio)
-    ///
-    /// When uncertainty is high, the controller uses a lower-bound estimate:
-    ///
-    ///     current_hashrate * exp(log_ratio - z_eff * sigma)
-    ///
-    /// where `z_eff` decays to zero once uncertainty is low.
+    /// with a discounted Gamma-Poisson posterior. It uses posterior-predictive
+    /// surprise to detect statistical breaks. Normal updates are conservative;
+    /// break updates are more direct.
     fn try_vardiff(
         &mut self,
         hashrate: f32,
@@ -387,47 +517,53 @@ impl Vardiff for VardiffState {
             return Ok(None);
         }
 
-        let log_ratio = self.update_expkf(observed_shares, target_shares);
-        let estimated_ratio = Self::safe_exp(log_ratio);
+        let break_detected = self.is_break(observed_shares, target_shares);
+        let predictive_z = self
+            .predictive_z_score(observed_shares, target_shares)
+            .unwrap_or(0.0);
 
-        let uncertainty = self.log_ratio_variance.max(0.0).sqrt();
-        let effective_lower_bound_z = self.effective_lower_bound_z();
+        if break_detected {
+            self.reset_posterior_from_observation(observed_shares, target_shares);
+        } else {
+            self.update_gamma_poisson(observed_shares, target_shares);
+        }
 
-        let lower_bound_log_ratio =
-            (log_ratio - effective_lower_bound_z * uncertainty).clamp(-50.0, 50.0);
+        let control_z = if break_detected {
+            self.break_control_z
+        } else {
+            self.normal_control_z
+        };
 
-        let lower_bound_ratio = Self::safe_exp(lower_bound_log_ratio);
-
-        let mean_hashrate = current_hashrate * estimated_ratio;
-        let proposed_hashrate = current_hashrate * lower_bound_ratio;
+        let posterior_mean_ratio = self.ratio_mean();
+        let posterior_std_ratio = self.ratio_variance().sqrt();
+        let control_ratio = self.control_ratio(control_z);
+        let proposed_hashrate = current_hashrate * control_ratio;
 
         debug!(
             target: "vardiff",
-            "ExPKF vardiff check:
+            "Gamma-Poisson vardiff check:
             - Elapsed time: {}s
             - Shares since last update: {}
             - Target shares: {:.4}
             - Current hashrate: {:.2} H/s
-            - Log-ratio: {:.6}
-            - Estimated ratio: {:.6}
-            - Mean hashrate: {:.2} H/s
-            - Uncertainty: {:.8}
-            - Effective lower-bound z: {:.6}
-            - Lower-bound log-ratio: {:.6}
-            - Lower-bound ratio: {:.6}
+            - Posterior mean ratio: {:.8}
+            - Posterior std ratio: {:.8}
+            - Predictive z: {:.6}
+            - Break detected: {}
+            - Control z: {:.6}
+            - Control ratio: {:.8}
             - Proposed hashrate: {:.2} H/s
             - Current miner target: {:?}",
             delta_time,
             self.shares_since_last_update,
             target_shares,
             current_hashrate,
-            log_ratio,
-            estimated_ratio,
-            mean_hashrate,
-            uncertainty,
-            effective_lower_bound_z,
-            lower_bound_log_ratio,
-            lower_bound_ratio,
+            posterior_mean_ratio,
+            posterior_std_ratio,
+            predictive_z,
+            break_detected,
+            control_z,
+            control_ratio,
             proposed_hashrate,
             _target,
         );
@@ -438,19 +574,27 @@ impl Vardiff for VardiffState {
 
         match maybe_new_hashrate {
             Some(new_hashrate) => {
-                self.reset_log_ratio_filter();
+                let applied_ratio = (new_hashrate / current_hashrate)
+                    .clamp(self.min_ratio, self.max_ratio);
+                self.rebase_posterior_after_update(applied_ratio);
 
                 debug!(
                     target: "vardiff",
-                    "ExPKF vardiff update accepted:
+                    "Gamma-Poisson vardiff update accepted:
                     - Previous hashrate: {:.2} H/s
                     - New hashrate: {:.2} H/s
+                    - Applied ratio: {:.8}
                     - Delta: {:.2}%
-                    - Log-ratio variance retained: {:.8}",
+                    - Break detected: {}
+                    - Rebased posterior mean ratio: {:.8}
+                    - Rebased posterior std ratio: {:.8}",
                     current_hashrate,
                     new_hashrate,
+                    applied_ratio,
                     ((new_hashrate - current_hashrate).abs() / current_hashrate) * 100.0,
-                    self.log_ratio_variance,
+                    break_detected,
+                    self.ratio_mean(),
+                    self.ratio_variance().sqrt(),
                 );
 
                 Ok(Some(new_hashrate as f32))
