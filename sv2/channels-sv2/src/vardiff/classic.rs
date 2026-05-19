@@ -3,200 +3,299 @@ use bitcoin::Target;
 use std::sync::Arc;
 use tracing::debug;
 
+use super::{error::VardiffError, Vardiff};
+
 const DEFAULT_MIN_HASHRATE: f64 = 1.0;
 
-/// Discounted Gamma-Poisson vardiff parameters.
+/// Gamma-Poisson prior for:
 ///
-/// State:
 ///     ratio = true_hashrate / assigned_hashrate
 ///
-/// Observation:
-///     observed_shares ~ Poisson(target_shares * ratio)
-///
-/// Prior/posterior:
-///     ratio ~ Gamma(alpha, beta)
-///
-/// where beta is the rate, not scale.
-const DEFAULT_PRIOR_SHARES: f64 = 4.0;
-const DEFAULT_INITIAL_RATIO: f64 = 1.0;
+/// with beta as rate, not scale.
+const DEFAULT_PRIOR_SHARES: f64 = 9.809931;
+const DEFAULT_INITIAL_RATIO: f64 = 0.801425;
 
-/// Exponential forgetting applied before each new observation.
-///
-/// Lower values react faster but add more jitter.
-/// Higher values are steadier but slower after real hashrate changes.
-const DEFAULT_DISCOUNT: f64 = 0.99;
+/// Evidence accumulation gate.
+const DEFAULT_MIN_TARGET_SHARES_FOR_UPDATE: f64 = 1.066427;
+const DEFAULT_MAX_UPDATE_INTERVAL_SECS: u64 = 300;
+const DEFAULT_RESET_COUNTER_ON_NO_UPDATE: bool = false;
 
-/// Conservative control while uncertainty is high.
+/// Settled-mode classifier.
 ///
-/// Proposed ratio:
-///     posterior_mean - z * posterior_std
-///
-/// Use 0.0 to target posterior mean directly.
-const DEFAULT_NORMAL_CONTROL_Z: f64 = 0.19;
+/// Settled mode means the controller has enough elapsed exposure and the current
+/// observation is not surprising under the posterior predictive model.
+const DEFAULT_SETTLED_MODE_MIN_AGE_SECS: u64 = 300;
+const DEFAULT_SETTLED_MODE_MAX_ABS_PREDICTIVE_Z: f64 = 0.882358;
+const DEFAULT_SETTLED_MODE_MIN_TARGET_SHARES: f64 = 8.000000;
 
-/// Control z after a detected statistical break.
-///
-/// Usually lower than normal z so the controller moves quickly after a break.
-const DEFAULT_BREAK_CONTROL_Z: f64 = 0.073;
+/// Recovery means the period immediately after an accepted update. It is treated
+/// as changing mode, not settled mode.
+const DEFAULT_RECOVERY_MODE_SECS: u64 = 180;
 
-/// Approximate posterior-predictive break detector.
-///
-/// Break test:
-///     z = (observed - predictive_mean) / sqrt(predictive_variance)
-///
-/// where:
-///     predictive_mean = target_shares * posterior_mean_ratio
-///     predictive_variance = predictive_mean
-///                         + target_shares^2 * posterior_ratio_variance
-const DEFAULT_BREAK_Z: f64 = 3.13;
-const DEFAULT_MIN_EXPECTED_SHARES_FOR_BREAK: f64 = 10.0;
-
-/// Posterior strength used when reseeding after a detected break.
-const DEFAULT_BREAK_RESET_PRIOR_SHARES: f64 = 1.1;
+/// Break detection.
+const DEFAULT_BREAK_Z: f64 = 3.0;
+const DEFAULT_MIN_EXPECTED_SHARES_FOR_BREAK: f64 = 4.0;
+const DEFAULT_BREAK_RESET_PRIOR_SHARES: f64 = 2.0;
+const DEFAULT_BREAK_RESET_BLEND: f64 = 0.85;
+const DEFAULT_BREAK_COOLDOWN_SECS: u64 = 60;
 
 /// Numerical clamps for the filtered ratio.
 const DEFAULT_MIN_RATIO: f64 = 1.0e-6;
 const DEFAULT_MAX_RATIO: f64 = 1.0e6;
 
-/// Maximum relative hashrate move accepted in one update.
+/// Changing-hashrate mode parameters.
 ///
-/// 300.0 means up to roughly +30000% in one update.
-const DEFAULT_MAX_RELATIVE_HASHRATE_CHANGE: f64 = 300.0;
+/// This mode is used during breaks, recovery, and non-settled operation. It is
+/// allowed to move faster, and `CHANGING_CONTROL_SCALE` controls how much of the
+/// inferred ratio error is applied in one proposal:
+///
+///     proposed_ratio = 1 + scale * (raw_control_ratio - 1)
+const DEFAULT_CHANGING_DISCOUNT: f64 = 0.836136;
+const DEFAULT_CHANGING_UPWARD_CONTROL_Z: f64 = 0.926083;
+const DEFAULT_CHANGING_DOWNWARD_CONTROL_Z: f64 = 1.600000;
+const DEFAULT_CHANGING_CONTROL_RATIO_SMOOTHING: f64 = 0.250000;
+const DEFAULT_CHANGING_CONTROL_SCALE: f64 = 1.234353;
+const DEFAULT_CHANGING_POISSON_UPDATE_Z: f64 = 1.461906;
+const DEFAULT_CHANGING_MIN_UPDATE_RELATIVE_CHANGE: f64 = 0.119178;
+const DEFAULT_CHANGING_MAX_UPDATE_RELATIVE_CHANGE: f64 = 1.00;
+const DEFAULT_CHANGING_MAX_UPWARD_RELATIVE_CHANGE: f64 = 2.087309;
+const DEFAULT_CHANGING_MAX_DOWNWARD_RELATIVE_CHANGE: f64 = 0.495645;
+const DEFAULT_CHANGING_POST_UPDATE_COOLDOWN_SECS: u64 = 0;
 
-/// Minimum relative hashrate change required to emit `Some(new_hashrate)`.
-const DEFAULT_MIN_UPDATE_RELATIVE_CHANGE: f64 = 0.285;
+/// Settled-hashrate mode parameters.
+///
+/// This mode is used only after enough evidence has accumulated and the current
+/// count is not surprising. It can allow smaller accuracy corrections, but with
+/// stronger smoothing/cooldown to avoid jitter.
+const DEFAULT_SETTLED_DISCOUNT: f64 = 0.971075;
+const DEFAULT_SETTLED_UPWARD_CONTROL_Z: f64 = 1.000000;
+const DEFAULT_SETTLED_DOWNWARD_CONTROL_Z: f64 = 0.747195;
+const DEFAULT_SETTLED_CONTROL_RATIO_SMOOTHING: f64 = 0.950000;
+const DEFAULT_SETTLED_CONTROL_SCALE: f64 = 0.600000;
+const DEFAULT_SETTLED_POISSON_UPDATE_Z: f64 = 0.450000;
+const DEFAULT_SETTLED_MIN_UPDATE_RELATIVE_CHANGE: f64 = 0.320000;
+const DEFAULT_SETTLED_MAX_UPDATE_RELATIVE_CHANGE: f64 = 0.20;
+const DEFAULT_SETTLED_MAX_UPWARD_RELATIVE_CHANGE: f64 = 0.700000;
+const DEFAULT_SETTLED_MAX_DOWNWARD_RELATIVE_CHANGE: f64 = 0.750000;
+const DEFAULT_SETTLED_POST_UPDATE_COOLDOWN_SECS: u64 = 0;
 
-use super::{error::VardiffError, Vardiff};
+/// Optional original-classic safety policies.
+const DEFAULT_ENABLE_ZERO_SHARE_POLICY: bool = false;
+const DEFAULT_ZERO_SHARE_DECAY_LE_30S: f64 = 1.5;
+const DEFAULT_ZERO_SHARE_DECAY_LT_60S: f64 = 2.0;
+const DEFAULT_ZERO_SHARE_DECAY_GE_60S: f64 = 3.0;
 
-/// Represents the dynamic state for a discounted Gamma-Poisson vardiff connection.
+const DEFAULT_EXTREME_UPWARD_DELTA_THRESHOLD: f64 = 10.0;
+const DEFAULT_EXTREME_UPWARD_CAP_LE_30S: f64 = 10.0;
+const DEFAULT_EXTREME_UPWARD_CAP_LT_60S: f64 = 5.0;
+const DEFAULT_EXTREME_UPWARD_CAP_GE_60S: f64 = 3.0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VardiffMode {
+    Changing,
+    Settled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VardiffModeReason {
+    Break,
+    Recovery,
+    NormalChanging,
+    Settled,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ModePolicy {
+    discount: f64,
+    upward_control_z: f64,
+    downward_control_z: f64,
+    smoothing: f64,
+    control_scale: f64,
+    poisson_update_z: f64,
+    min_update_relative_change: f64,
+    max_update_relative_change: f64,
+    max_upward_relative_change: f64,
+    max_downward_relative_change: f64,
+    post_update_cooldown_secs: u64,
+}
+
+/// Gamma-Poisson vardiff controller with two fundamental control policies:
 ///
-/// The estimator models:
+/// 1. Changing hashrate mode: used during break/recovery/unstable periods.
+/// 2. Settled hashrate mode: used when evidence is strong and predictive z is small.
 ///
-///     observed_shares ~ Poisson(target_shares * ratio)
+/// Pipeline:
 ///
-/// where:
-///
-///     ratio = true_hashrate / assigned_hashrate
-///
-/// A Gamma posterior is maintained over `ratio`. Under normal conditions the
-/// posterior is discounted over time, which lets the estimator adapt without
-/// becoming permanently overconfident. A posterior-predictive z-score is used to
-/// detect statistical breaks. On break, the posterior is reseeded around the
-/// observed ratio so large hashrate jumps are handled quickly without needing a
-/// permanently jittery steady-state configuration.
+/// 1. Count shares over elapsed exposure.
+/// 2. Compute pre-update predictive z and detect breaks.
+/// 3. Classify into Changing or Settled policy.
+/// 4. Update Gamma-Poisson posterior using mode-specific discount.
+/// 5. Compute raw control ratio from posterior mean/std.
+/// 6. Apply changing/settled control scale.
+/// 7. Apply mode-specific smoothing.
+/// 8. Apply evidence-scaled deadband.
+/// 9. Apply asymmetric clamps and cooldown.
+/// 10. Rebase posterior after accepted update.
 #[derive(Debug)]
 pub struct VardiffState {
-    /// Count of shares received since the last filter observation.
     pub shares_since_last_update: u32,
-
-    /// Unix timestamp (seconds) of the last filter observation.
     pub timestamp_of_last_update: u64,
-
-    /// The lowest hashrate (H/s) the system will allow; values below this are clamped.
+    pub timestamp_of_last_accepted_update: u64,
+    pub timestamp_of_last_break: u64,
     pub min_allowed_hashrate: f64,
-
-    /// Source of current time for elapsed-time computations.
     pub clock: Arc<dyn Clock>,
 
-    /// Gamma posterior shape for ratio = true_hashrate / assigned_hashrate.
     pub ratio_alpha: f64,
-
-    /// Gamma posterior rate for ratio = true_hashrate / assigned_hashrate.
     pub ratio_beta: f64,
-
-    /// Initial pseudo-share strength.
     pub prior_shares: f64,
 
-    /// Discount factor applied before assimilating each window.
-    pub discount: f64,
+    pub min_target_shares_for_update: f64,
+    pub max_update_interval_secs: u64,
+    pub reset_counter_on_no_update: bool,
 
-    /// Normal-mode lower-bound z.
-    pub normal_control_z: f64,
+    pub settled_mode_min_age_secs: u64,
+    pub settled_mode_max_abs_predictive_z: f64,
+    pub settled_mode_min_target_shares: f64,
+    pub recovery_mode_secs: u64,
 
-    /// Break-mode lower-bound z.
-    pub break_control_z: f64,
-
-    /// Absolute z threshold for the approximate posterior-predictive break detector.
     pub break_z: f64,
-
-    /// Minimum predictive expected shares needed before allowing break detection.
     pub min_expected_shares_for_break: f64,
-
-    /// Prior strength used when reseeding the posterior after a break.
     pub break_reset_prior_shares: f64,
+    pub break_reset_blend: f64,
+    pub break_cooldown_secs: u64,
 
-    /// Minimum allowed ratio.
     pub min_ratio: f64,
-
-    /// Maximum allowed ratio.
     pub max_ratio: f64,
 
-    /// Maximum relative hashrate move accepted in one update.
-    pub max_relative_hashrate_change: f64,
+    pub changing_discount: f64,
+    pub changing_upward_control_z: f64,
+    pub changing_downward_control_z: f64,
+    pub changing_control_ratio_smoothing: f64,
+    pub changing_control_scale: f64,
+    pub changing_poisson_update_z: f64,
+    pub changing_min_update_relative_change: f64,
+    pub changing_max_update_relative_change: f64,
+    pub changing_max_upward_relative_change: f64,
+    pub changing_max_downward_relative_change: f64,
+    pub changing_post_update_cooldown_secs: u64,
 
-    /// Minimum relative hashrate change required to return `Some(new_hashrate)`.
-    pub min_update_relative_change: f64,
+    pub settled_discount: f64,
+    pub settled_upward_control_z: f64,
+    pub settled_downward_control_z: f64,
+    pub settled_control_ratio_smoothing: f64,
+    pub settled_control_scale: f64,
+    pub settled_poisson_update_z: f64,
+    pub settled_min_update_relative_change: f64,
+    pub settled_max_update_relative_change: f64,
+    pub settled_max_upward_relative_change: f64,
+    pub settled_max_downward_relative_change: f64,
+    pub settled_post_update_cooldown_secs: u64,
+
+    pub last_control_ratio: f64,
+
+    pub enable_zero_share_policy: bool,
+    pub zero_share_decay_le_30s: f64,
+    pub zero_share_decay_lt_60s: f64,
+    pub zero_share_decay_ge_60s: f64,
+
+    pub extreme_upward_delta_threshold: f64,
+    pub extreme_upward_cap_le_30s: f64,
+    pub extreme_upward_cap_lt_60s: f64,
+    pub extreme_upward_cap_ge_60s: f64,
 }
 
 impl std::panic::UnwindSafe for VardiffState {}
 impl std::panic::RefUnwindSafe for VardiffState {}
 
 impl VardiffState {
-    /// Creates a new `VardiffState` with the default minimum hashrate.
     pub fn new() -> Result<Self, VardiffError> {
         Self::new_with_min(DEFAULT_MIN_HASHRATE as f32)
     }
 
-    /// Creates a new `VardiffState` with a specific minimum hashrate.
     pub fn new_with_min(min_allowed_hashrate: f32) -> Result<Self, VardiffError> {
         Self::new_with_clock(min_allowed_hashrate, Arc::new(SystemClock))
     }
 
-    /// Creates a new `VardiffState` with an injected clock.
-    ///
-    /// This is used by the simulation framework and tests so time can be
-    /// advanced deterministically.
     pub fn new_with_clock(
         min_allowed_hashrate: f32,
         clock: Arc<dyn Clock>,
     ) -> Result<Self, VardiffError> {
         let timestamp_secs = clock.now_secs();
-
         let prior_shares = DEFAULT_PRIOR_SHARES.max(1.0e-12);
-        let initial_ratio = DEFAULT_INITIAL_RATIO
-            .clamp(DEFAULT_MIN_RATIO, DEFAULT_MAX_RATIO);
+        let initial_ratio = DEFAULT_INITIAL_RATIO.clamp(DEFAULT_MIN_RATIO, DEFAULT_MAX_RATIO);
 
-        Ok(VardiffState {
+        Ok(Self {
             shares_since_last_update: 0,
             timestamp_of_last_update: timestamp_secs,
+            timestamp_of_last_accepted_update: 0,
+            timestamp_of_last_break: 0,
             min_allowed_hashrate: (min_allowed_hashrate as f64).max(DEFAULT_MIN_HASHRATE),
             clock,
 
             ratio_alpha: prior_shares,
             ratio_beta: prior_shares / initial_ratio,
-
             prior_shares,
-            discount: DEFAULT_DISCOUNT,
-            normal_control_z: DEFAULT_NORMAL_CONTROL_Z,
-            break_control_z: DEFAULT_BREAK_CONTROL_Z,
+
+            min_target_shares_for_update: DEFAULT_MIN_TARGET_SHARES_FOR_UPDATE,
+            max_update_interval_secs: DEFAULT_MAX_UPDATE_INTERVAL_SECS,
+            reset_counter_on_no_update: DEFAULT_RESET_COUNTER_ON_NO_UPDATE,
+
+            settled_mode_min_age_secs: DEFAULT_SETTLED_MODE_MIN_AGE_SECS,
+            settled_mode_max_abs_predictive_z: DEFAULT_SETTLED_MODE_MAX_ABS_PREDICTIVE_Z,
+            settled_mode_min_target_shares: DEFAULT_SETTLED_MODE_MIN_TARGET_SHARES,
+            recovery_mode_secs: DEFAULT_RECOVERY_MODE_SECS,
+
             break_z: DEFAULT_BREAK_Z,
             min_expected_shares_for_break: DEFAULT_MIN_EXPECTED_SHARES_FOR_BREAK,
             break_reset_prior_shares: DEFAULT_BREAK_RESET_PRIOR_SHARES,
+            break_reset_blend: DEFAULT_BREAK_RESET_BLEND,
+            break_cooldown_secs: DEFAULT_BREAK_COOLDOWN_SECS,
 
             min_ratio: DEFAULT_MIN_RATIO,
             max_ratio: DEFAULT_MAX_RATIO,
 
-            max_relative_hashrate_change: DEFAULT_MAX_RELATIVE_HASHRATE_CHANGE,
-            min_update_relative_change: DEFAULT_MIN_UPDATE_RELATIVE_CHANGE,
+            changing_discount: DEFAULT_CHANGING_DISCOUNT,
+            changing_upward_control_z: DEFAULT_CHANGING_UPWARD_CONTROL_Z,
+            changing_downward_control_z: DEFAULT_CHANGING_DOWNWARD_CONTROL_Z,
+            changing_control_ratio_smoothing: DEFAULT_CHANGING_CONTROL_RATIO_SMOOTHING,
+            changing_control_scale: DEFAULT_CHANGING_CONTROL_SCALE,
+            changing_poisson_update_z: DEFAULT_CHANGING_POISSON_UPDATE_Z,
+            changing_min_update_relative_change: DEFAULT_CHANGING_MIN_UPDATE_RELATIVE_CHANGE,
+            changing_max_update_relative_change: DEFAULT_CHANGING_MAX_UPDATE_RELATIVE_CHANGE,
+            changing_max_upward_relative_change: DEFAULT_CHANGING_MAX_UPWARD_RELATIVE_CHANGE,
+            changing_max_downward_relative_change: DEFAULT_CHANGING_MAX_DOWNWARD_RELATIVE_CHANGE,
+            changing_post_update_cooldown_secs: DEFAULT_CHANGING_POST_UPDATE_COOLDOWN_SECS,
+
+            settled_discount: DEFAULT_SETTLED_DISCOUNT,
+            settled_upward_control_z: DEFAULT_SETTLED_UPWARD_CONTROL_Z,
+            settled_downward_control_z: DEFAULT_SETTLED_DOWNWARD_CONTROL_Z,
+            settled_control_ratio_smoothing: DEFAULT_SETTLED_CONTROL_RATIO_SMOOTHING,
+            settled_control_scale: DEFAULT_SETTLED_CONTROL_SCALE,
+            settled_poisson_update_z: DEFAULT_SETTLED_POISSON_UPDATE_Z,
+            settled_min_update_relative_change: DEFAULT_SETTLED_MIN_UPDATE_RELATIVE_CHANGE,
+            settled_max_update_relative_change: DEFAULT_SETTLED_MAX_UPDATE_RELATIVE_CHANGE,
+            settled_max_upward_relative_change: DEFAULT_SETTLED_MAX_UPWARD_RELATIVE_CHANGE,
+            settled_max_downward_relative_change: DEFAULT_SETTLED_MAX_DOWNWARD_RELATIVE_CHANGE,
+            settled_post_update_cooldown_secs: DEFAULT_SETTLED_POST_UPDATE_COOLDOWN_SECS,
+
+            last_control_ratio: initial_ratio,
+
+            enable_zero_share_policy: DEFAULT_ENABLE_ZERO_SHARE_POLICY,
+            zero_share_decay_le_30s: DEFAULT_ZERO_SHARE_DECAY_LE_30S,
+            zero_share_decay_lt_60s: DEFAULT_ZERO_SHARE_DECAY_LT_60S,
+            zero_share_decay_ge_60s: DEFAULT_ZERO_SHARE_DECAY_GE_60S,
+
+            extreme_upward_delta_threshold: DEFAULT_EXTREME_UPWARD_DELTA_THRESHOLD,
+            extreme_upward_cap_le_30s: DEFAULT_EXTREME_UPWARD_CAP_LE_30S,
+            extreme_upward_cap_lt_60s: DEFAULT_EXTREME_UPWARD_CAP_LT_60S,
+            extreme_upward_cap_ge_60s: DEFAULT_EXTREME_UPWARD_CAP_GE_60S,
         })
     }
 
-    /// Sets the count of shares since the last update.
     pub fn set_shares_since_last_update(&mut self, shares_since_last_update: u32) {
         self.shares_since_last_update = shares_since_last_update;
     }
 
-    /// Posterior mean of the ratio.
     fn ratio_mean(&self) -> f64 {
         if self.ratio_beta <= 0.0 {
             return 1.0;
@@ -205,7 +304,6 @@ impl VardiffState {
         (self.ratio_alpha / self.ratio_beta).clamp(self.min_ratio, self.max_ratio)
     }
 
-    /// Posterior variance of the ratio.
     fn ratio_variance(&self) -> f64 {
         if self.ratio_beta <= 0.0 {
             return self.max_ratio;
@@ -214,13 +312,6 @@ impl VardiffState {
         (self.ratio_alpha / self.ratio_beta.powi(2)).max(0.0)
     }
 
-    /// Approximate posterior-predictive z-score for the current count window.
-    ///
-    /// This uses the law of total variance:
-    ///
-    ///     Var[Y] = E[Var[Y | ratio]] + Var[E[Y | ratio]]
-    ///            = target_shares * mean_ratio
-    ///            + target_shares^2 * var_ratio
     fn predictive_z_score(&self, observed_shares: f64, target_shares: f64) -> Option<f64> {
         let target_shares = target_shares.max(0.0);
 
@@ -230,7 +321,6 @@ impl VardiffState {
 
         let mean_ratio = self.ratio_mean();
         let var_ratio = self.ratio_variance();
-
         let predictive_mean = target_shares * mean_ratio;
         let predictive_variance =
             (predictive_mean + target_shares.powi(2) * var_ratio).max(1.0e-12);
@@ -238,11 +328,12 @@ impl VardiffState {
         Some((observed_shares - predictive_mean) / predictive_variance.sqrt())
     }
 
-    /// Returns true when the current count is implausible under the posterior predictive model.
-    fn is_break(&self, observed_shares: f64, target_shares: f64) -> bool {
-        let mean_ratio = self.ratio_mean();
-        let predictive_expected = target_shares * mean_ratio;
+    fn is_break(&self, observed_shares: f64, target_shares: f64, now: u64) -> bool {
+        if now.saturating_sub(self.timestamp_of_last_break) < self.break_cooldown_secs {
+            return false;
+        }
 
+        let predictive_expected = target_shares * self.ratio_mean();
         if predictive_expected < self.min_expected_shares_for_break {
             return false;
         }
@@ -254,75 +345,93 @@ impl VardiffState {
         z_score.abs() >= self.break_z
     }
 
-    /// Reseeds the Gamma posterior around the observed ratio after a detected break.
-    fn reset_posterior_from_observation(&mut self, observed_shares: f64, target_shares: f64) {
-        let target_shares = target_shares.max(1.0e-12);
-        let observed_ratio = (observed_shares / target_shares)
-            .clamp(self.min_ratio, self.max_ratio);
+    fn classify_mode(
+        &self,
+        delta_time: u64,
+        target_shares: f64,
+        predictive_z: f64,
+        break_detected: bool,
+        now: u64,
+    ) -> (VardiffMode, VardiffModeReason) {
+        if break_detected {
+            return (VardiffMode::Changing, VardiffModeReason::Break);
+        }
 
-        let strength = self.break_reset_prior_shares.max(1.0e-12);
+        if now.saturating_sub(self.timestamp_of_last_accepted_update) < self.recovery_mode_secs {
+            return (VardiffMode::Changing, VardiffModeReason::Recovery);
+        }
 
-        self.ratio_alpha = strength;
-        self.ratio_beta = strength / observed_ratio;
+        let settled = delta_time >= self.settled_mode_min_age_secs
+            && target_shares >= self.settled_mode_min_target_shares
+            && predictive_z.abs() <= self.settled_mode_max_abs_predictive_z;
 
-        self.ratio_alpha += observed_shares.max(0.0);
-        self.ratio_beta += target_shares;
-
-        self.clamp_posterior();
-
-        debug!(
-            target: "vardiff",
-            "Gamma-Poisson break reset:
-            - Observed shares: {:.4}
-            - Target shares: {:.4}
-            - Observed ratio: {:.8}
-            - Reset alpha: {:.8}
-            - Reset beta: {:.8}
-            - Reset posterior mean ratio: {:.8}
-            - Reset posterior std ratio: {:.8}",
-            observed_shares,
-            target_shares,
-            observed_ratio,
-            self.ratio_alpha,
-            self.ratio_beta,
-            self.ratio_mean(),
-            self.ratio_variance().sqrt(),
-        );
+        if settled {
+            (VardiffMode::Settled, VardiffModeReason::Settled)
+        } else {
+            (VardiffMode::Changing, VardiffModeReason::NormalChanging)
+        }
     }
 
-    /// Applies one discounted Gamma-Poisson update.
-    fn update_gamma_poisson(&mut self, observed_shares: f64, target_shares: f64) {
+    fn mode_policy(&self, mode: VardiffMode) -> ModePolicy {
+        match mode {
+            VardiffMode::Changing => ModePolicy {
+                discount: self.changing_discount,
+                upward_control_z: self.changing_upward_control_z,
+                downward_control_z: self.changing_downward_control_z,
+                smoothing: self.changing_control_ratio_smoothing,
+                control_scale: self.changing_control_scale,
+                poisson_update_z: self.changing_poisson_update_z,
+                min_update_relative_change: self.changing_min_update_relative_change,
+                max_update_relative_change: self.changing_max_update_relative_change,
+                max_upward_relative_change: self.changing_max_upward_relative_change,
+                max_downward_relative_change: self.changing_max_downward_relative_change,
+                post_update_cooldown_secs: self.changing_post_update_cooldown_secs,
+            },
+            VardiffMode::Settled => ModePolicy {
+                discount: self.settled_discount,
+                upward_control_z: self.settled_upward_control_z,
+                downward_control_z: self.settled_downward_control_z,
+                smoothing: self.settled_control_ratio_smoothing,
+                control_scale: self.settled_control_scale,
+                poisson_update_z: self.settled_poisson_update_z,
+                min_update_relative_change: self.settled_min_update_relative_change,
+                max_update_relative_change: self.settled_max_update_relative_change,
+                max_upward_relative_change: self.settled_max_upward_relative_change,
+                max_downward_relative_change: self.settled_max_downward_relative_change,
+                post_update_cooldown_secs: self.settled_post_update_cooldown_secs,
+            },
+        }
+    }
+
+    fn should_wait_for_more_evidence(&self, target_shares: f64, delta_time: u64) -> bool {
+        target_shares < self.min_target_shares_for_update.max(0.0)
+            && delta_time < self.max_update_interval_secs
+    }
+
+    fn reset_posterior_from_observation(&mut self, observed_shares: f64, target_shares: f64) {
+        let target_shares = target_shares.max(1.0e-12);
+        let observed_ratio = (observed_shares / target_shares).clamp(self.min_ratio, self.max_ratio);
+        let old_ratio = self.ratio_mean();
+        let blend = self.break_reset_blend.clamp(0.0, 1.0);
+        let reset_ratio =
+            (blend * observed_ratio + (1.0 - blend) * old_ratio).clamp(self.min_ratio, self.max_ratio);
+        let strength = self.break_reset_prior_shares.max(1.0e-12);
+
+        self.ratio_alpha = strength + observed_shares.max(0.0);
+        self.ratio_beta = strength / reset_ratio + target_shares;
+        self.clamp_posterior();
+    }
+
+    fn update_gamma_poisson(&mut self, observed_shares: f64, target_shares: f64, discount: f64) {
         let observed_shares = observed_shares.max(0.0);
         let target_shares = target_shares.max(1.0e-12);
-
-        let discount = self.discount.clamp(0.0, 1.0);
+        let discount = discount.clamp(0.0, 1.0);
 
         self.ratio_alpha = self.ratio_alpha * discount + observed_shares;
         self.ratio_beta = self.ratio_beta * discount + target_shares;
-
         self.clamp_posterior();
-
-        debug!(
-            target: "vardiff",
-            "Gamma-Poisson update:
-            - Observed shares: {:.4}
-            - Target shares: {:.4}
-            - Discount: {:.6}
-            - Posterior alpha: {:.8}
-            - Posterior beta: {:.8}
-            - Posterior mean ratio: {:.8}
-            - Posterior std ratio: {:.8}",
-            observed_shares,
-            target_shares,
-            discount,
-            self.ratio_alpha,
-            self.ratio_beta,
-            self.ratio_mean(),
-            self.ratio_variance().sqrt(),
-        );
     }
 
-    /// Keeps posterior values finite and inside the configured ratio range.
     fn clamp_posterior(&mut self) {
         if !self.ratio_alpha.is_finite() || self.ratio_alpha <= 0.0 {
             self.ratio_alpha = self.prior_shares.max(1.0e-12);
@@ -333,7 +442,6 @@ impl VardiffState {
         }
 
         let mean = self.ratio_alpha / self.ratio_beta;
-
         if mean < self.min_ratio {
             self.ratio_beta = self.ratio_alpha / self.min_ratio;
         } else if mean > self.max_ratio {
@@ -344,101 +452,149 @@ impl VardiffState {
         self.ratio_beta = self.ratio_beta.max(1.0e-12);
     }
 
-    /// Returns the ratio used for control.
-    ///
-    /// In normal mode, this can target a conservative lower bound. In break mode,
-    /// it usually targets the posterior mean to move quickly.
-    fn control_ratio(&self, control_z: f64) -> f64 {
+    fn raw_control_ratio(&self, policy: ModePolicy) -> f64 {
         let mean = self.ratio_mean();
         let std = self.ratio_variance().sqrt();
+        let z = if mean >= 1.0 {
+            policy.upward_control_z
+        } else {
+            policy.downward_control_z
+        };
 
-        (mean - control_z.max(0.0) * std).clamp(self.min_ratio, self.max_ratio)
+        (mean - z.max(0.0) * std).clamp(self.min_ratio, self.max_ratio)
     }
 
-    /// Rebase the posterior after applying a hashrate update.
-    ///
-    /// If old ratio is:
-    ///
-    ///     true_hashrate / old_assigned_hashrate
-    ///
-    /// and the assigned hashrate is multiplied by `applied_ratio`, then the new
-    /// ratio is:
-    ///
-    ///     old_ratio / applied_ratio
-    ///
-    /// For a Gamma rate parameterization, scaling the random variable by
-    /// `1 / applied_ratio` is equivalent to multiplying beta by `applied_ratio`.
-    fn rebase_posterior_after_update(&mut self, applied_ratio: f64) {
-        let applied_ratio = applied_ratio
-            .clamp(self.min_ratio, self.max_ratio)
-            .max(1.0e-12);
-
-        self.ratio_beta *= applied_ratio;
-        self.clamp_posterior();
-
-        debug!(
-            target: "vardiff",
-            "Gamma-Poisson posterior rebased:
-            - Applied ratio: {:.8}
-            - Rebased alpha: {:.8}
-            - Rebased beta: {:.8}
-            - Rebased mean ratio: {:.8}
-            - Rebased std ratio: {:.8}",
-            applied_ratio,
-            self.ratio_alpha,
-            self.ratio_beta,
-            self.ratio_mean(),
-            self.ratio_variance().sqrt(),
-        );
+    fn scale_control_ratio(&self, raw_ratio: f64, policy: ModePolicy) -> f64 {
+        let scale = policy.control_scale.max(0.0);
+        (1.0 + scale * (raw_ratio - 1.0)).clamp(self.min_ratio, self.max_ratio)
     }
 
-    /// Clamps a proposed hashrate update and decides whether it should be emitted.
-    fn apply_update_policy(&self, proposed_hashrate: f64, current_hashrate: f64) -> Option<f64> {
-        let current_hashrate = current_hashrate
-            .max(self.min_allowed_hashrate)
-            .max(1.0);
+    fn smooth_control_ratio(&mut self, proposed_ratio: f64, policy: ModePolicy) -> f64 {
+        let smoothing = policy.smoothing.clamp(0.0, 0.999);
+        let last = self.last_control_ratio.clamp(self.min_ratio, self.max_ratio);
+        let smoothed =
+            (smoothing * last + (1.0 - smoothing) * proposed_ratio).clamp(self.min_ratio, self.max_ratio);
 
-        let proposed_hashrate = if proposed_hashrate.is_finite() {
-            proposed_hashrate
-                .max(self.min_allowed_hashrate)
-                .max(1.0)
+        self.last_control_ratio = smoothed;
+        smoothed
+    }
+
+    fn evidence_scaled_deadband(&self, target_shares: f64, policy: ModePolicy) -> f64 {
+        let exposure = target_shares.max(1.0e-12);
+        let poisson_threshold = policy.poisson_update_z.max(0.0) / exposure.sqrt();
+
+        poisson_threshold
+            .max(policy.min_update_relative_change.max(0.0))
+            .min(policy.max_update_relative_change.max(policy.min_update_relative_change.max(0.0)))
+    }
+
+    fn apply_zero_share_policy(
+        &self,
+        proposed_hashrate: f64,
+        current_hashrate: f64,
+        observed_shares: f64,
+        delta_time: u64,
+    ) -> f64 {
+        if !self.enable_zero_share_policy || observed_shares > 0.0 {
+            return proposed_hashrate;
+        }
+
+        let decay = match delta_time {
+            dt if dt <= 30 => self.zero_share_decay_le_30s,
+            dt if dt < 60 => self.zero_share_decay_lt_60s,
+            _ => self.zero_share_decay_ge_60s,
+        }
+        .max(1.0e-12);
+
+        proposed_hashrate.min(current_hashrate / decay)
+    }
+
+    fn apply_extreme_upward_policy(
+        &self,
+        proposed_hashrate: f64,
+        current_hashrate: f64,
+        delta_time: u64,
+    ) -> f64 {
+        let current_hashrate = current_hashrate.max(1.0);
+        let signed_relative_change = proposed_hashrate / current_hashrate - 1.0;
+
+        if signed_relative_change <= self.extreme_upward_delta_threshold.max(0.0) {
+            return proposed_hashrate;
+        }
+
+        let cap_multiplier = match delta_time {
+            dt if dt <= 30 => self.extreme_upward_cap_le_30s,
+            dt if dt < 60 => self.extreme_upward_cap_lt_60s,
+            _ => self.extreme_upward_cap_ge_60s,
+        }
+        .max(1.0);
+
+        proposed_hashrate.min(current_hashrate * cap_multiplier)
+    }
+
+    fn apply_update_policy(
+        &self,
+        proposed_hashrate: f64,
+        current_hashrate: f64,
+        observed_shares: f64,
+        target_shares: f64,
+        delta_time: u64,
+        now: u64,
+        policy: ModePolicy,
+    ) -> Option<f64> {
+        if now.saturating_sub(self.timestamp_of_last_accepted_update) < policy.post_update_cooldown_secs {
+            return None;
+        }
+
+        let current_hashrate = current_hashrate.max(self.min_allowed_hashrate).max(1.0);
+        let mut proposed_hashrate = if proposed_hashrate.is_finite() {
+            proposed_hashrate.max(self.min_allowed_hashrate).max(1.0)
         } else {
             current_hashrate
         };
 
-        let lower = (current_hashrate * (1.0 - self.max_relative_hashrate_change))
+        proposed_hashrate =
+            self.apply_zero_share_policy(proposed_hashrate, current_hashrate, observed_shares, delta_time);
+        proposed_hashrate = self.apply_extreme_upward_policy(proposed_hashrate, current_hashrate, delta_time);
+
+        let lower = (current_hashrate * (1.0 - policy.max_downward_relative_change.clamp(0.0, 1.0)))
             .max(self.min_allowed_hashrate)
             .max(1.0);
-
-        let upper = (current_hashrate * (1.0 + self.max_relative_hashrate_change))
+        let upper = (current_hashrate * (1.0 + policy.max_upward_relative_change.max(0.0)))
             .max(self.min_allowed_hashrate)
             .max(1.0);
 
         let clamped_hashrate = proposed_hashrate.clamp(lower, upper);
-        let relative_change = (clamped_hashrate / current_hashrate - 1.0).abs();
+        let signed_relative_change = clamped_hashrate / current_hashrate - 1.0;
+        let relative_change = signed_relative_change.abs();
+        let deadband = self.evidence_scaled_deadband(target_shares, policy);
 
         debug!(
             target: "vardiff",
-            "Gamma-Poisson update policy:
-            - Proposed hashrate: {:.2} H/s
-            - Current hashrate: {:.2} H/s
-            - Clamped hashrate: {:.2} H/s
-            - Relative change: {:.6}
-            - Min update relative change: {:.6}
-            - Max relative change: {:.6}",
+            "Gamma-Poisson mode update policy:\n            - Proposed hashrate after special policies: {:.2} H/s\n            - Current hashrate: {:.2} H/s\n            - Clamped hashrate: {:.2} H/s\n            - Target shares: {:.4}\n            - Observed shares: {:.4}\n            - Relative change: {:.6}\n            - Evidence-scaled deadband: {:.6}\n            - Cooldown seconds: {}",
             proposed_hashrate,
             current_hashrate,
             clamped_hashrate,
+            target_shares,
+            observed_shares,
             relative_change,
-            self.min_update_relative_change,
-            self.max_relative_hashrate_change,
+            deadband,
+            policy.post_update_cooldown_secs,
         );
 
-        if relative_change >= self.min_update_relative_change {
+        if relative_change >= deadband {
             Some(clamped_hashrate)
         } else {
             None
         }
+    }
+
+    fn rebase_posterior_after_update(&mut self, applied_ratio: f64) {
+        let applied_ratio = applied_ratio.clamp(self.min_ratio, self.max_ratio).max(1.0e-12);
+
+        self.ratio_beta *= applied_ratio;
+        self.last_control_ratio = (self.last_control_ratio / applied_ratio).clamp(self.min_ratio, self.max_ratio);
+        self.clamp_posterior();
     }
 }
 
@@ -455,42 +611,25 @@ impl Vardiff for VardiffState {
         self.min_allowed_hashrate as f32
     }
 
-    /// Sets the timestamp of the last update.
     fn set_timestamp_of_last_update(&mut self, timestamp_of_last_update: u64) {
         self.timestamp_of_last_update = timestamp_of_last_update;
     }
 
-    /// Increments the share counter by one.
     fn increment_shares_since_last_update(&mut self) {
         self.shares_since_last_update = self.shares_since_last_update.saturating_add(1);
     }
 
-    /// Adds many shares at once.
-    ///
-    /// The simulation framework uses this to bulk-add Poisson-sampled shares.
     fn add_shares(&mut self, count: u32) {
         self.shares_since_last_update = self.shares_since_last_update.saturating_add(count);
     }
 
-    /// Resets the share counter and updates the timestamp to now.
     fn reset_counter(&mut self) -> Result<(), VardiffError> {
         let timestamp_secs = self.clock.now_secs();
-
         self.set_timestamp_of_last_update(timestamp_secs);
         self.set_shares_since_last_update(0);
-
         Ok(())
     }
 
-    /// Checks channel performance and potentially updates the assigned hashrate.
-    ///
-    /// This implementation estimates:
-    ///
-    ///     ratio = true_hashrate / assigned_hashrate
-    ///
-    /// with a discounted Gamma-Poisson posterior. It uses posterior-predictive
-    /// surprise to detect statistical breaks. Normal updates are conservative;
-    /// break updates are more direct.
     fn try_vardiff(
         &mut self,
         hashrate: f32,
@@ -504,10 +643,7 @@ impl Vardiff for VardiffState {
             return Ok(None);
         }
 
-        let current_hashrate = (hashrate as f64)
-            .max(self.min_allowed_hashrate)
-            .max(1.0);
-
+        let current_hashrate = (hashrate as f64).max(self.min_allowed_hashrate).max(1.0);
         let elapsed_minutes = delta_time as f64 / 60.0;
         let target_shares = (shares_per_minute as f64).max(0.0) * elapsed_minutes;
         let observed_shares = self.shares_since_last_update as f64;
@@ -517,89 +653,108 @@ impl Vardiff for VardiffState {
             return Ok(None);
         }
 
-        let break_detected = self.is_break(observed_shares, target_shares);
-        let predictive_z = self
+        if self.should_wait_for_more_evidence(target_shares, delta_time) {
+            debug!(
+                target: "vardiff",
+                "Gamma-Poisson vardiff waiting for more evidence:\n                - Elapsed time: {}s\n                - Shares since last update: {}\n                - Target shares: {:.4}\n                - Min target shares for update: {:.4}\n                - Max update interval seconds: {}",
+                delta_time,
+                self.shares_since_last_update,
+                target_shares,
+                self.min_target_shares_for_update,
+                self.max_update_interval_secs,
+            );
+
+            return Ok(None);
+        }
+
+        let pre_update_predictive_z = self
             .predictive_z_score(observed_shares, target_shares)
             .unwrap_or(0.0);
+        let break_detected = self.is_break(observed_shares, target_shares, now);
+        let (mode, mode_reason) = self.classify_mode(
+            delta_time,
+            target_shares,
+            pre_update_predictive_z,
+            break_detected,
+            now,
+        );
+        let policy = self.mode_policy(mode);
 
         if break_detected {
             self.reset_posterior_from_observation(observed_shares, target_shares);
+            self.timestamp_of_last_break = now;
         } else {
-            self.update_gamma_poisson(observed_shares, target_shares);
+            self.update_gamma_poisson(observed_shares, target_shares, policy.discount);
         }
-
-        let control_z = if break_detected {
-            self.break_control_z
-        } else {
-            self.normal_control_z
-        };
 
         let posterior_mean_ratio = self.ratio_mean();
         let posterior_std_ratio = self.ratio_variance().sqrt();
-        let control_ratio = self.control_ratio(control_z);
+        let raw_control_ratio = self.raw_control_ratio(policy);
+        let scaled_control_ratio = self.scale_control_ratio(raw_control_ratio, policy);
+        let control_ratio = self.smooth_control_ratio(scaled_control_ratio, policy);
         let proposed_hashrate = current_hashrate * control_ratio;
 
         debug!(
             target: "vardiff",
-            "Gamma-Poisson vardiff check:
-            - Elapsed time: {}s
-            - Shares since last update: {}
-            - Target shares: {:.4}
-            - Current hashrate: {:.2} H/s
-            - Posterior mean ratio: {:.8}
-            - Posterior std ratio: {:.8}
-            - Predictive z: {:.6}
-            - Break detected: {}
-            - Control z: {:.6}
-            - Control ratio: {:.8}
-            - Proposed hashrate: {:.2} H/s
-            - Current miner target: {:?}",
+            "Gamma-Poisson vardiff check:\n            - Mode: {:?}\n            - Mode reason: {:?}\n            - Elapsed time: {}s\n            - Shares since last update: {}\n            - Target shares: {:.4}\n            - Current hashrate: {:.2} H/s\n            - Pre-update predictive z: {:.6}\n            - Break detected: {}\n            - Posterior mean ratio: {:.8}\n            - Posterior std ratio: {:.8}\n            - Raw control ratio: {:.8}\n            - Scaled control ratio: {:.8}\n            - Smoothed control ratio: {:.8}\n            - Control scale: {:.6}\n            - Proposed hashrate: {:.2} H/s\n            - Current miner target: {:?}",
+            mode,
+            mode_reason,
             delta_time,
             self.shares_since_last_update,
             target_shares,
             current_hashrate,
+            pre_update_predictive_z,
+            break_detected,
             posterior_mean_ratio,
             posterior_std_ratio,
-            predictive_z,
-            break_detected,
-            control_z,
+            raw_control_ratio,
+            scaled_control_ratio,
             control_ratio,
+            policy.control_scale,
             proposed_hashrate,
             _target,
         );
 
-        let maybe_new_hashrate = self.apply_update_policy(proposed_hashrate, current_hashrate);
-
-        self.reset_counter()?;
+        let maybe_new_hashrate = self.apply_update_policy(
+            proposed_hashrate,
+            current_hashrate,
+            observed_shares,
+            target_shares,
+            delta_time,
+            now,
+            policy,
+        );
 
         match maybe_new_hashrate {
             Some(new_hashrate) => {
-                let applied_ratio = (new_hashrate / current_hashrate)
-                    .clamp(self.min_ratio, self.max_ratio);
+                self.reset_counter()?;
+
+                let applied_ratio = (new_hashrate / current_hashrate).clamp(self.min_ratio, self.max_ratio);
+                self.timestamp_of_last_accepted_update = now;
                 self.rebase_posterior_after_update(applied_ratio);
 
                 debug!(
                     target: "vardiff",
-                    "Gamma-Poisson vardiff update accepted:
-                    - Previous hashrate: {:.2} H/s
-                    - New hashrate: {:.2} H/s
-                    - Applied ratio: {:.8}
-                    - Delta: {:.2}%
-                    - Break detected: {}
-                    - Rebased posterior mean ratio: {:.8}
-                    - Rebased posterior std ratio: {:.8}",
+                    "Gamma-Poisson vardiff update accepted:\n                    - Mode: {:?}\n                    - Mode reason: {:?}\n                    - Previous hashrate: {:.2} H/s\n                    - New hashrate: {:.2} H/s\n                    - Applied ratio: {:.8}\n                    - Delta: {:.2}%\n                    - Rebased posterior mean ratio: {:.8}\n                    - Rebased posterior std ratio: {:.8}",
+                    mode,
+                    mode_reason,
                     current_hashrate,
                     new_hashrate,
                     applied_ratio,
                     ((new_hashrate - current_hashrate).abs() / current_hashrate) * 100.0,
-                    break_detected,
                     self.ratio_mean(),
                     self.ratio_variance().sqrt(),
                 );
 
                 Ok(Some(new_hashrate as f32))
             }
-            None => Ok(None),
+            None => {
+                if self.reset_counter_on_no_update {
+                    self.reset_counter()?;
+                }
+
+                Ok(None)
+            }
         }
     }
 }
