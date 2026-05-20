@@ -26,6 +26,7 @@ tracing = { workspace = true }
 bitcoin = { workspace = true }
 primitive-types = { workspace = true }
 hashbrown = { workspace = true, optional = true }
+statrs = "0.18"
 
 
 [features]
