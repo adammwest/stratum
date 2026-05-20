@@ -1,29 +1,23 @@
-//! The four-axis vardiff decomposition.
+//! The three-stage vardiff pipeline.
 //!
-//! Four orthogonal extension traits plus a composing adapter that let
-//! any (Estimator, Statistic, Boundary, UpdateRule) tuple be
-//! automatically a valid [`Vardiff`] implementation. The classic
-//! algorithm is one specific composition (see [`classic_composed`])
-//! and is asserted fire-for-fire equivalent to
-//! [`crate::vardiff::classic::VardiffState`] by the `vardiff_sim`
-//! crate's equivalence-test suite.
+//! Three sequential stages plus a composing adapter that let any
+//! (Estimator, Boundary, UpdateRule) triple be automatically a valid
+//! [`Vardiff`] implementation. The classic algorithm is one specific
+//! composition (see [`classic_composed`]) and is asserted fire-for-fire
+//! equivalent to [`crate::vardiff::classic::VardiffState`] by the
+//! `vardiff_sim` crate's equivalence-test suite.
 //!
-//! The recommended production composition is constructed via
-//! [`crate::vardiff::classic::VardiffState::production_default`] (or
-//! the equivalent factory in `vardiff_sim::AlgorithmSpec::full_remedy`):
+//! The recommended production composition (FullRemedy):
 //!
 //! ```rust,ignore
-//! use channels_sv2::vardiff::{
-//!     classic::VardiffState,
-//!     composed::{Composed, EwmaEstimator, AbsoluteRatio,
-//!                PoissonCI, PartialRetarget},
-//!     SystemClock,
+//! use channels_sv2::vardiff::composed::{
+//!     Composed, EwmaEstimator, PoissonCI, PartialRetarget,
 //! };
+//! use channels_sv2::vardiff::SystemClock;
 //! use std::sync::Arc;
 //!
 //! let v = Composed::new(
 //!     EwmaEstimator::new(120),
-//!     AbsoluteRatio,
 //!     PoissonCI::default_parametric(),
 //!     PartialRetarget::new(0.2),
 //!     /* min_hashrate */ 1.0,
@@ -40,15 +34,20 @@ pub mod boundary;
 pub mod composed;
 pub mod decision;
 pub mod estimator;
-pub mod statistic;
 pub mod update;
 
-pub use boundary::{Boundary, PoissonCI, StepFunction};
+pub use boundary::{
+    AdaptiveCusumBoundary, Boundary, CredibleIntervalBoundary, CusumBoundary, PoissonCI,
+    StepFunction,
+};
 pub use composed::{classic_composed, ClassicComposed, Composed};
 pub use decision::DecisionRecord;
+pub use estimator::Uncertainty;
 pub use estimator::{
-    CumulativeCounter, Estimator, EstimatorContext, EstimatorSnapshot, EwmaEstimator,
-    SlidingWindowEstimator,
+    BayesianEstimator, CumulativeCounter, Estimator, EstimatorContext, EstimatorSnapshot,
+    EwmaEstimator, KalmanEstimator, SlidingWindowEstimator,
 };
-pub use statistic::{AbsoluteRatio, Statistic};
-pub use update::{FullRetargetNoClamp, FullRetargetWithClamp, PartialRetarget, UpdateRule};
+pub use update::{
+    AdaptivePartialRetarget, FullRetargetNoClamp, FullRetargetWithClamp, PartialRetarget,
+    UpdateRule,
+};

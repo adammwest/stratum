@@ -572,6 +572,13 @@ pub fn registry() -> Vec<Box<dyn Metric>> {
             settle_after_secs: INTROSPECTION_SETTLE_AFTER_SECS,
         }),
         Box::new(RampTargetOvershoot),
+        Box::new(FireDecisiveness {
+            settle_after_secs: 0,
+        }),
+        Box::new(StepCorrection {
+            event_at_secs: STEP_EVENT_AT_SECS,
+            react_window_secs: REACT_WINDOW_SECS,
+        }),
     ]
 }
 
@@ -1693,11 +1700,137 @@ pub fn bootstrap_percentile_ci(
 }
 
 // ============================================================================
+// Stage-aware metrics
+// ============================================================================
+
+/// Stage 3: mean margin by which delta exceeded threshold at fire ticks.
+/// Higher = fires are more decisive (clear signal, not marginal noise).
+#[derive(Debug, Clone)]
+pub struct FireDecisiveness {
+    pub settle_after_secs: u64,
+}
+
+impl Metric for FireDecisiveness {
+    fn id(&self) -> &'static str {
+        "fire_decisiveness"
+    }
+    fn category(&self) -> MetricCategory {
+        MetricCategory::Behavioral
+    }
+    fn class(&self) -> MetricClass {
+        MetricClass::ReportOnly
+    }
+    fn applies_to(&self, cell: &Cell) -> bool {
+        // Meaningful for step scenarios (fires after real change) and stable (noise fires)
+        matches!(cell.scenario, Scenario::Stable | Scenario::Step { .. })
+    }
+    fn compute(&self, trials: &[Trial], _cell: &Cell) -> MetricValues {
+        let mut margins: Vec<f64> = Vec::new();
+        for trial in trials {
+            for tick in &trial.ticks {
+                if !tick.fired || tick.t_secs < self.settle_after_secs {
+                    continue;
+                }
+                if let (Some(d), Some(t)) = (tick.delta, tick.threshold) {
+                    if d >= t {
+                        margins.push(d - t);
+                    }
+                }
+            }
+        }
+        let mut v = MetricValues::new();
+        if margins.is_empty() {
+            v.set("fire_decisiveness_mean", None);
+            v.set("fire_decisiveness_p50", None);
+        } else {
+            let mean = margins.iter().sum::<f64>() / margins.len() as f64;
+            v.set("fire_decisiveness_mean", Some(mean));
+            margins.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let p50 = margins[margins.len() / 2];
+            v.set("fire_decisiveness_p50", Some(p50));
+        }
+        v
+    }
+    fn tolerance_checks(&self, _cell: &Cell) -> Vec<ToleranceCheck> {
+        vec![]
+    }
+}
+
+/// Stage 4: what fraction of the needed correction did the first fire
+/// after a step change accomplish?
+/// Value of 1.0 = perfect single-fire correction.
+/// PartialRetarget(η) should produce approximately η.
+#[derive(Debug, Clone)]
+pub struct StepCorrection {
+    pub event_at_secs: u64,
+    pub react_window_secs: u64,
+}
+
+impl Metric for StepCorrection {
+    fn id(&self) -> &'static str {
+        "step_correction"
+    }
+    fn category(&self) -> MetricCategory {
+        MetricCategory::Behavioral
+    }
+    fn class(&self) -> MetricClass {
+        MetricClass::ReportOnly
+    }
+    fn applies_to(&self, cell: &Cell) -> bool {
+        matches!(cell.scenario, Scenario::Step { .. })
+    }
+    fn compute(&self, trials: &[Trial], cell: &Cell) -> MetricValues {
+        let true_h_after = match cell.scenario {
+            Scenario::Step { delta_pct } => {
+                let base = 1.0e15f32;
+                base * (1.0 + delta_pct as f32 / 100.0)
+            }
+            _ => return MetricValues::new(),
+        };
+
+        let mut corrections: Vec<f64> = Vec::new();
+        for trial in trials {
+            // Find first fire after the step event
+            if let Some(tick) = trial.ticks.iter().find(|t| {
+                t.fired
+                    && t.t_secs > self.event_at_secs
+                    && t.t_secs <= self.event_at_secs + self.react_window_secs
+            }) {
+                let new_h = tick.new_hashrate.unwrap_or(tick.current_hashrate_before);
+                let current_h = tick.current_hashrate_before;
+                let needed = true_h_after - current_h;
+                if needed.abs() > 1.0 {
+                    let achieved = new_h - current_h;
+                    corrections.push((achieved / needed) as f64);
+                }
+            }
+        }
+
+        let mut v = MetricValues::new();
+        if corrections.is_empty() {
+            v.set("step_correction_mean", None);
+            v.set("step_correction_p50", None);
+        } else {
+            let mean = corrections.iter().sum::<f64>() / corrections.len() as f64;
+            v.set("step_correction_mean", Some(mean));
+            corrections.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let p50 = corrections[corrections.len() / 2];
+            v.set("step_correction_p50", Some(p50));
+        }
+        v
+    }
+    fn tolerance_checks(&self, _cell: &Cell) -> Vec<ToleranceCheck> {
+        vec![]
+    }
+}
+
+
+// ============================================================================
 // Derived-metric constants
 // ============================================================================
 
 /// The default upper bound on jitter (fires/min) above which the
-/// algorithm is considered "noisy". Used by [`DecouplingScore`] to
+/// algorithm is considered "noisy". Used by [`SelectivityScore`] to
 /// normalize the jitter term.
 pub const DEFAULT_JITTER_CEILING_PER_MIN: f64 = 0.5;
 
@@ -1741,7 +1874,11 @@ pub trait DerivedMetric: Send + Sync + Debug {
 /// reaction-asymmetry. The serializer and comparator iterate this in
 /// order.
 pub fn derived_registry() -> Vec<Box<dyn DerivedMetric>> {
-    vec![Box::new(DecouplingScore), Box::new(ReactionAsymmetry)]
+    vec![
+        Box::new(OperationalFitness),
+        Box::new(DecouplingScore),
+        Box::new(ReactionAsymmetry),
+    ]
 }
 
 // ---- DecouplingScore -------------------------------------------------------
@@ -1881,6 +2018,186 @@ impl DerivedMetric for DecouplingScore {
                 None => "—".to_string(),
             };
             w.push_str(&format!("| {} | {} |\n", spm as u32, cell));
+        }
+        w.push('\n');
+    }
+}
+
+// ---- OperationalFitness ---------------------------------------------------
+
+/// Per-share-rate composite metric weighted for real-world pool operation:
+///
+/// ```text
+/// fitness = 0.25 × reaction_rate(Step −10%)
+///         + 0.20 × reaction_rate(Step −50%)
+///         + 0.20 × clamp(1 − jitter_mean / 0.30, 0, 1)
+///         + 0.25 × convergence_rate × clamp(1 − conv_p50 / 600s, 0, 1)
+///         + 0.10 × clamp(1 − overshoot_p99, 0, 1)
+/// ```
+///
+/// Convergence is now both pass/fail (rate) AND speed (p50 time).
+/// A 60s convergence scores 1.0; 600s (10 min) scores 0.0.
+/// This penalizes algorithms that converge slowly even if they
+/// eventually get there.
+///
+/// Higher is better. Weights reflect operational priorities:
+/// - Small-change detection (30%): the primary value — detecting 10%
+///   hashrate declines (failing ASICs, thermal throttling) within
+///   minutes is worth more than detecting catastrophic drops.
+/// - Large-change detection (20%): still important for disconnects.
+/// - Jitter control (20%): tighter tolerance (0.10 fires/min ceiling
+///   vs the old 0.50). Excessive jitter destabilizes share submission
+///   rate and confuses monitoring.
+/// - Convergence (20%): new miners must reach correct difficulty fast.
+/// - Overshoot safety (10%): cold-start ramp shouldn't overshoot truth.
+#[derive(Debug, Clone, Default)]
+pub struct OperationalFitness;
+
+impl DerivedMetric for OperationalFitness {
+    fn id(&self) -> &'static str {
+        "operational_fitness"
+    }
+
+    fn class(&self) -> MetricClass {
+        MetricClass::MustHave
+    }
+
+    fn compute(&self, results: &[crate::baseline::CellResult]) -> Vec<(f32, MetricValues)> {
+        #[derive(Default, Clone)]
+        struct Inputs {
+            reaction_10: Option<f64>,
+            reaction_50: Option<f64>,
+            jitter_mean: Option<f64>,
+            convergence_rate: Option<f64>,
+            convergence_p50_secs: Option<f64>,
+            overshoot_p99: Option<f64>,
+        }
+        let mut by_spm: HashMap<u32, Inputs> = HashMap::new();
+        for r in results {
+            let spm_key = r.shares_per_minute as u32;
+            let entry = by_spm.entry(spm_key).or_default();
+            match r.scenario {
+                Scenario::Stable => {
+                    if let Some(j) = r.get("jitter_mean_per_min") {
+                        entry.jitter_mean = Some(j);
+                    }
+                }
+                Scenario::Step { delta_pct: -10 } => {
+                    if let Some(rate) = r.get("reaction_rate") {
+                        entry.reaction_10 = Some(rate);
+                    }
+                }
+                Scenario::Step { delta_pct: -50 } => {
+                    if let Some(rate) = r.get("reaction_rate") {
+                        entry.reaction_50 = Some(rate);
+                    }
+                }
+                Scenario::ColdStart => {
+                    if let Some(rate) = r.get("convergence_rate") {
+                        entry.convergence_rate = Some(rate);
+                    }
+                    if let Some(t) = r.get("convergence_p50_secs") {
+                        entry.convergence_p50_secs = Some(t);
+                    }
+                    if let Some(ov) = r.get("ramp_target_overshoot_p99") {
+                        entry.overshoot_p99 = Some(ov);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let mut entries: Vec<_> = by_spm.into_iter().collect();
+        entries.sort_by_key(|&(spm, _)| spm);
+
+        // Convergence speed ceiling: 600s (10 min) = score 0.
+        // Faster convergence → higher score (linear scaling).
+        const CONV_CEILING_SECS: f64 = 600.0;
+
+        entries
+            .into_iter()
+            .filter_map(|(spm, inp)| {
+                let r10 = inp.reaction_10.unwrap_or(0.0);
+                let r50 = inp.reaction_50.unwrap_or(0.0);
+                let jitter = inp.jitter_mean.unwrap_or(1.0);
+                let conv_rate = inp.convergence_rate.unwrap_or(0.0);
+                let conv_secs = inp.convergence_p50_secs.unwrap_or(CONV_CEILING_SECS);
+                let overshoot = inp.overshoot_p99.unwrap_or(1.0);
+
+                let jitter_factor = (1.0 - jitter / 0.30).clamp(0.0, 1.0);
+                let overshoot_factor = (1.0 - overshoot).clamp(0.0, 1.0);
+                // Convergence factor: combines rate (did it converge?) with speed (how fast?)
+                // conv_rate gates: if it didn't converge, speed is irrelevant (score 0).
+                // Speed: 60s → 1.0, 600s → 0.0, linear between.
+                let speed_factor = (1.0 - conv_secs / CONV_CEILING_SECS).clamp(0.0, 1.0);
+                let convergence_factor = conv_rate * speed_factor;
+
+                let score = 0.25 * r10
+                    + 0.20 * r50
+                    + 0.20 * jitter_factor
+                    + 0.25 * convergence_factor
+                    + 0.10 * overshoot_factor;
+
+                let mut mv = MetricValues::new();
+                mv.set("score", Some(score));
+                mv.set("reaction_10_component", Some(r10));
+                mv.set("reaction_50_component", Some(r50));
+                mv.set("jitter_component", Some(jitter_factor));
+                mv.set("convergence_component", Some(convergence_factor));
+                mv.set("overshoot_component", Some(overshoot_factor));
+                Some((spm as f32, mv))
+            })
+            .collect()
+    }
+
+    fn tolerance_checks(&self, _spm: f32) -> Vec<ToleranceCheck> {
+        vec![ToleranceCheck {
+            key: "score",
+            tolerance: Tolerance::WithinCi {
+                direction: Direction::HigherIsBetter,
+                extra_abs: 0.05,
+                extra_mul: None,
+            },
+        }]
+    }
+
+    fn summary_specs(&self) -> Vec<SummarySpec> {
+        vec![SummarySpec {
+            label: "operational fitness",
+            key: "score",
+            direction: Direction::HigherIsBetter,
+            scenario_filter: ScenarioFilter::Any,
+            fmt: SummaryFmt::Float3,
+        }]
+    }
+
+    fn render_markdown(&self, results: &[crate::baseline::CellResult], w: &mut String) {
+        let scores = self.compute(results);
+        if scores.is_empty() {
+            return;
+        }
+        w.push_str("## Operational fitness (per share rate)\n\n");
+        w.push_str(
+            "`0.25×react(-10%) + 0.2×react(-50%) + 0.2×(1-jitter/0.3) + \
+             0.25×(conv_rate×conv_speed) + 0.1×(1-overshoot)`. Higher is better.\n\n",
+        );
+        w.push_str("| share/min | fitness | react-10% | react-50% | jitter | conv | overshoot |\n");
+        w.push_str("| --- | --- | --- | --- | --- | --- | --- |\n");
+        for (spm, mv) in scores {
+            let s = |k: &str| match mv.get(k) {
+                Some(v) => format!("{:.3}", v),
+                None => "—".to_string(),
+            };
+            w.push_str(&format!(
+                "| {} | {} | {} | {} | {} | {} | {} |\n",
+                spm as u32,
+                s("score"),
+                s("reaction_10_component"),
+                s("reaction_50_component"),
+                s("jitter_component"),
+                s("convergence_component"),
+                s("overshoot_component"),
+            ));
         }
         w.push('\n');
     }
@@ -2133,6 +2450,8 @@ mod tests {
                 delta: None,
                 threshold: None,
                 h_estimate: Some(h),
+                ratio_std: None,
+                effective_n: None,
             })
             .collect();
         Trial {
@@ -2167,6 +2486,8 @@ mod tests {
                 delta: None,
                 threshold: None,
                 h_estimate: None,
+                ratio_std: None,
+                effective_n: None,
             })
             .collect();
         Trial {
@@ -2515,6 +2836,8 @@ mod tests {
                 "bias",
                 "variance",
                 "ramp_target_overshoot",
+                "fire_decisiveness",
+                "step_correction",
             ]
         );
     }
@@ -2523,7 +2846,10 @@ mod tests {
     fn derived_registry_returns_metrics_in_canonical_order() {
         let r = derived_registry();
         let ids: Vec<&str> = r.iter().map(|m| m.id()).collect();
-        assert_eq!(ids, vec!["decoupling_score", "reaction_asymmetry"]);
+        assert_eq!(
+            ids,
+            vec!["operational_fitness", "decoupling_score", "reaction_asymmetry"]
+        );
     }
 
     #[test]
@@ -2743,6 +3069,8 @@ mod tests {
                 delta: None,
                 threshold: None,
                 h_estimate: None,
+                ratio_std: None,
+                effective_n: None,
             })
             .collect();
         Trial {

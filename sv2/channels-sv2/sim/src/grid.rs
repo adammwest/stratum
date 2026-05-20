@@ -244,7 +244,7 @@ impl AlgorithmSpec {
         })
     }
 
-    /// The four-axis-decomposed Classic algorithm. Asserted
+    /// The three-stage-decomposed Classic algorithm. Asserted
     /// fire-for-fire equivalent to `VardiffState`; additionally
     /// exposes the per-tick decision state, so bias / variance /
     /// overshoot metrics work.
@@ -259,14 +259,13 @@ impl AlgorithmSpec {
     /// `PoissonCI(z = 2.576, margin = 0.05)` rate-aware threshold.
     ///
     /// This is the canonical one-axis-swap from Classic: same
-    /// Estimator, same Statistic, same Update — only the threshold
+    /// Estimator, same Update — only the threshold
     /// form differs. Holding three axes constant and varying the
-    /// fourth is exactly what the four-axis decomposition supports.
+    /// fourth is exactly what the three-stage pipeline supports.
     pub fn parametric() -> Self {
         Self::new("Parametric", |clock| {
             let inner = composed::Composed::new(
                 composed::CumulativeCounter::new(),
-                composed::AbsoluteRatio,
                 composed::PoissonCI::default_parametric(),
                 composed::FullRetargetWithClamp::classic(),
                 1.0,
@@ -279,7 +278,7 @@ impl AlgorithmSpec {
     /// EWMA-60s: an exponentially-weighted estimator with τ = 60s,
     /// combined with the rate-aware Parametric boundary and a damped
     /// partial-retarget update (η = 0.5). Three axes differ from
-    /// Classic — Estimator, Boundary, Update — leaving Statistic
+    /// Classic — Estimator and Update — leaving Boundary
     /// shared. Demonstrates the framework's combinatorial reuse:
     /// `EwmaEstimator` + `PoissonCI` + `PartialRetarget` are each
     /// individually swappable, and EWMA is one specific composition
@@ -306,7 +305,6 @@ impl AlgorithmSpec {
         Self::new(name, move |clock| {
             let inner = composed::Composed::new(
                 composed::EwmaEstimator::new(tau_secs),
-                composed::AbsoluteRatio,
                 composed::PoissonCI::default_parametric(),
                 composed::PartialRetarget::default_ewma(),
                 1.0,
@@ -317,7 +315,7 @@ impl AlgorithmSpec {
     }
 
     /// Sliding-Window algorithm: `SlidingWindowEstimator(n_ticks)` +
-    /// `AbsoluteRatio` + `PoissonCI(2.576, 0.05)` +
+    /// `PoissonCI(2.576, 0.05)` +
     /// `FullRetargetNoClamp`.
     ///
     /// Algorithm name is `"SlidingWindow-{n_ticks}t"`. The
@@ -328,7 +326,6 @@ impl AlgorithmSpec {
         Self::new(name, move |clock| {
             let inner = composed::Composed::new(
                 composed::SlidingWindowEstimator::new(n_ticks),
-                composed::AbsoluteRatio,
                 composed::PoissonCI::default_parametric(),
                 composed::FullRetargetNoClamp,
                 1.0,
@@ -352,7 +349,6 @@ impl AlgorithmSpec {
         Self::new("ParametricStrict", |clock| {
             let inner = composed::Composed::new(
                 composed::CumulativeCounter::new(),
-                composed::AbsoluteRatio,
                 composed::PoissonCI::strict_3sigma(),
                 composed::FullRetargetWithClamp::classic(),
                 1.0,
@@ -370,7 +366,7 @@ impl AlgorithmSpec {
     /// full-retarget-without-clamps, η = 0.3 moves only 30% toward
     /// the estimator's belief on each fire.
     ///
-    /// **Why study this in isolation?** The four-axis hypothesis is
+    /// **Why study this in isolation?** The three-stage hypothesis is
     /// that each axis closes a distinct failure mode. The
     /// 0xcb3b/SPM=6 cascade survives a boundary tightening because
     /// the *update magnitude* (full retarget to a noisy single-window
@@ -386,7 +382,6 @@ impl AlgorithmSpec {
         Self::new(name, move |clock| {
             let inner = composed::Composed::new(
                 composed::CumulativeCounter::new(),
-                composed::AbsoluteRatio,
                 composed::StepFunction::classic_table(),
                 composed::PartialRetarget::new(eta),
                 1.0,
@@ -432,7 +427,6 @@ impl AlgorithmSpec {
         Self::new("FullRemedy", |clock| {
             let inner = composed::Composed::new(
                 composed::EwmaEstimator::new(120),
-                composed::AbsoluteRatio,
                 composed::PoissonCI::default_parametric(),
                 composed::PartialRetarget::new(0.2),
                 1.0,
@@ -473,9 +467,217 @@ impl AlgorithmSpec {
         Self::new(name, move |clock| {
             let inner = composed::Composed::new(
                 composed::EwmaEstimator::new(tau_secs),
-                composed::AbsoluteRatio,
                 composed::PoissonCI::with_z(z, 0.05),
                 composed::PartialRetarget::new(eta),
+                1.0,
+                clock,
+            );
+            VardiffBox(Box::new(inner))
+        })
+    }
+
+    /// Bayesian Gamma-Poisson estimator composed with PoissonCI boundary
+    /// and PartialRetarget update rule. Uses the same boundary and update
+    /// rule as FullRemedy but replaces the EWMA estimator with a
+    /// principled Bayesian posterior over the hashrate ratio.
+    ///
+    /// `discount`: exponential forgetting per tick (0.90–0.99).
+    /// `prior_shares`: initial pseudo-count strength (2.0–10.0).
+    /// `eta`: PartialRetarget damping factor.
+    /// `z`: PoissonCI z-score threshold.
+    pub fn bayesian(discount: f64, prior_shares: f64, eta: f32, z: f64) -> Self {
+        let name = format!(
+            "Bayesian-d{}-p{}-eta{}-z{}",
+            (discount * 1000.0).round() as u32,
+            (prior_shares * 10.0).round() as u32,
+            (eta * 100.0).round() as u32,
+            (z * 1000.0).round() as u32,
+        );
+        Self::new(name, move |clock| {
+            let inner = composed::Composed::new(
+                composed::BayesianEstimator::new(discount, prior_shares),
+                composed::PoissonCI::with_z(z, 0.05),
+                composed::PartialRetarget::new(eta),
+                1.0,
+                clock,
+            );
+            VardiffBox(Box::new(inner))
+        })
+    }
+
+    /// Bayesian estimator with FullRetarget (no damping) — for testing
+    /// the estimator's noise characteristics in isolation. If the Bayesian
+    /// estimator is smooth enough, it can tolerate aggressive updates.
+    pub fn bayesian_full_retarget(discount: f64, prior_shares: f64, z: f64) -> Self {
+        let name = format!(
+            "Bayesian-d{}-p{}-full-z{}",
+            (discount * 1000.0).round() as u32,
+            (prior_shares * 10.0).round() as u32,
+            (z * 1000.0).round() as u32,
+        );
+        Self::new(name, move |clock| {
+            let inner = composed::Composed::new(
+                composed::BayesianEstimator::new(discount, prior_shares),
+                composed::PoissonCI::with_z(z, 0.05),
+                composed::FullRetargetNoClamp,
+                1.0,
+                clock,
+            );
+            VardiffBox(Box::new(inner))
+        })
+    }
+
+    /// Bayesian estimator with CredibleIntervalBoundary — the composition
+    /// that leverages uncertainty-aware decision making. The boundary fires
+    /// when the Gamma posterior's credible interval excludes ratio=1.0.
+    ///
+    /// `discount`: exponential forgetting per tick.
+    /// `prior_shares`: initial pseudo-count strength.
+    /// `ci_z`: credible interval z-score (1.96=95%, 2.576=99%).
+    /// `eta`: PartialRetarget damping.
+    pub fn bayesian_ci(discount: f64, prior_shares: f64, ci_z: f64, eta: f32) -> Self {
+        let name = format!(
+            "BayesCI-d{}-p{}-z{}-eta{}",
+            (discount * 1000.0).round() as u32,
+            (prior_shares * 10.0).round() as u32,
+            (ci_z * 1000.0).round() as u32,
+            (eta * 100.0).round() as u32,
+        );
+        Self::new(name, move |clock| {
+            let inner = composed::Composed::new(
+                composed::BayesianEstimator::new(discount, prior_shares),
+                composed::CredibleIntervalBoundary::with_z(ci_z),
+                composed::PartialRetarget::new(eta),
+                1.0,
+                clock,
+            );
+            VardiffBox(Box::new(inner))
+        })
+    }
+
+    /// Kalman estimator + PoissonCI boundary + PartialRetarget.
+    /// The Kalman provides adaptive smoothing + native uncertainty.
+    pub fn kalman_poisson(q: f64, eta: f32) -> Self {
+        let name = format!(
+            "Kalman-q{}-eta{}",
+            (q * 10000.0).round() as u32,
+            (eta * 100.0).round() as u32,
+        );
+        Self::new(name, move |clock| {
+            let inner = composed::Composed::new(
+                composed::KalmanEstimator::new(q),
+                composed::PoissonCI::default_parametric(),
+                composed::PartialRetarget::new(eta),
+                1.0,
+                clock,
+            );
+            VardiffBox(Box::new(inner))
+        })
+    }
+
+    /// Kalman estimator + CredibleIntervalBoundary + PartialRetarget.
+    /// Full uncertainty-aware pipeline: Kalman reports confidence,
+    /// CI boundary adapts threshold to confidence.
+    pub fn kalman_ci(q: f64, ci_z: f64, eta: f32) -> Self {
+        let name = format!(
+            "KalmanCI-q{}-z{}-eta{}",
+            (q * 10000.0).round() as u32,
+            (ci_z * 1000.0).round() as u32,
+            (eta * 100.0).round() as u32,
+        );
+        Self::new(name, move |clock| {
+            let inner = composed::Composed::new(
+                composed::KalmanEstimator::new(q),
+                composed::CredibleIntervalBoundary::with_z(ci_z),
+                composed::PartialRetarget::new(eta),
+                1.0,
+                clock,
+            );
+            VardiffBox(Box::new(inner))
+        })
+    }
+
+    /// EWMA estimator + CUSUM boundary + PartialRetarget.
+    /// Sequential-testing boundary that detects sustained changes faster.
+    pub fn ewma_cusum(tau_secs: u64, sensitivity: f64, floor: f64, eta: f32) -> Self {
+        let name = format!(
+            "EWMA-CUSUM-tau{}-s{}-f{}-eta{}",
+            tau_secs,
+            (sensitivity * 10.0).round() as u32,
+            (floor * 100.0).round() as u32,
+            (eta * 100.0).round() as u32,
+        );
+        Self::new(name, move |clock| {
+            let inner = composed::Composed::new(
+                composed::EwmaEstimator::new(tau_secs),
+                composed::CusumBoundary::new(sensitivity, floor),
+                composed::PartialRetarget::new(eta),
+                1.0,
+                clock,
+            );
+            VardiffBox(Box::new(inner))
+        })
+    }
+
+    /// Kalman estimator + CUSUM boundary + PartialRetarget.
+    /// Both new components: adaptive estimator + sequential boundary.
+    pub fn kalman_cusum(q: f64, sensitivity: f64, floor: f64, eta: f32) -> Self {
+        let name = format!(
+            "Kalman-CUSUM-q{}-s{}-f{}-eta{}",
+            (q * 10000.0).round() as u32,
+            (sensitivity * 10.0).round() as u32,
+            (floor * 100.0).round() as u32,
+            (eta * 100.0).round() as u32,
+        );
+        Self::new(name, move |clock| {
+            let inner = composed::Composed::new(
+                composed::KalmanEstimator::new(q),
+                composed::CusumBoundary::new(sensitivity, floor),
+                composed::PartialRetarget::new(eta),
+                1.0,
+                clock,
+            );
+            VardiffBox(Box::new(inner))
+        })
+    }
+
+    /// EWMA + AdaptiveCusumBoundary: rate-adaptive sequential testing.
+    /// Sensitivity scales with √(SPM/reference) so it's conservative at
+    /// low SPM (less jitter) and aggressive at high SPM (faster detection).
+    pub fn ewma_adaptive_cusum(tau_secs: u64, base_sensitivity: f64, floor: f64, eta: f32) -> Self {
+        let name = format!(
+            "EWMA-AdaCUSUM-tau{}-s{}-f{}-eta{}",
+            tau_secs,
+            (base_sensitivity * 10.0).round() as u32,
+            (floor * 100.0).round() as u32,
+            (eta * 100.0).round() as u32,
+        );
+        Self::new(name, move |clock| {
+            let inner = composed::Composed::new(
+                composed::EwmaEstimator::new(tau_secs),
+                composed::AdaptiveCusumBoundary::new(base_sensitivity, floor),
+                composed::PartialRetarget::new(eta),
+                1.0,
+                clock,
+            );
+            VardiffBox(Box::new(inner))
+        })
+    }
+
+    /// FullRemedy with AdaptivePartialRetarget: scales η by fire margin.
+    /// `eta_base` is the damping at reference_margin; `reference_margin`
+    /// is the "normal" margin in percentage points.
+    pub fn full_remedy_adaptive(eta_base: f32, reference_margin: f64) -> Self {
+        let name = format!(
+            "FullRemedy-Adaptive-eta{}-ref{}",
+            (eta_base * 100.0).round() as u32,
+            reference_margin.round() as u32,
+        );
+        Self::new(name, move |clock| {
+            let inner = composed::Composed::new(
+                composed::EwmaEstimator::new(120),
+                composed::PoissonCI::default_parametric(),
+                composed::AdaptivePartialRetarget::new(eta_base, reference_margin),
                 1.0,
                 clock,
             );
@@ -503,9 +705,9 @@ pub struct Grid {
 
 impl Grid {
     /// The canonical default grid: one algorithm (classic
-    /// `VardiffState`), 5 share rates, 10 scenarios (cold start +
-    /// stable + 8 step deltas). 50 cells total. Matches the cell
-    /// ordering used by [`crate::baseline::default_cells`].
+    /// `VardiffState`), 8 share rates (SPM=6-30), 10 scenarios
+    /// (cold start + stable + 8 step deltas). 80 cells total.
+    /// Matches the cell ordering used by [`crate::baseline::default_cells`].
     pub fn default_classic() -> Self {
         let mut scenarios = vec![Scenario::ColdStart, Scenario::Stable];
         for &delta in &[-50, -25, -10, -5, 5, 10, 25, 50] {
@@ -513,7 +715,7 @@ impl Grid {
         }
         Self {
             algorithms: vec![AlgorithmSpec::classic_vardiff_state()],
-            share_rates: vec![6.0, 12.0, 30.0, 60.0, 120.0],
+            share_rates: vec![6.0, 8.0, 10.0, 12.0, 15.0, 20.0, 25.0, 30.0],
             scenarios,
             trial_count: DEFAULT_TRIAL_COUNT,
             base_seed: DEFAULT_BASELINE_SEED,
@@ -700,13 +902,13 @@ mod tests {
     use crate::baseline::{default_cells, run_baseline};
 
     #[test]
-    fn default_classic_has_one_algorithm_five_rates_ten_scenarios() {
+    fn default_classic_has_one_algorithm_eight_rates_ten_scenarios() {
         let g = Grid::default_classic();
         assert_eq!(g.algorithms.len(), 1);
         assert_eq!(g.algorithms[0].name, "VardiffState");
-        assert_eq!(g.share_rates.len(), 5);
+        assert_eq!(g.share_rates.len(), 8);
         assert_eq!(g.scenarios.len(), 10);
-        assert_eq!(g.total_runs(), 50);
+        assert_eq!(g.total_runs(), 80);
     }
 
     #[test]
@@ -1254,7 +1456,7 @@ mod tests {
     //
     //   2. The unchanged axes preserve structural state (share
     //      counters, timestamps) across the swap — confirms that
-    //      identical Estimator + Statistic + Update axes really do
+    //      identical Estimator + Update stages really do
     //      behave identically under the same observe sequence.
     //
     // Without these, future axis additions could silently re-couple
@@ -1301,7 +1503,7 @@ mod tests {
 
     #[test]
     fn unchanged_axes_preserve_structural_state_across_boundary_swap() {
-        // Classic and Parametric share Estimator + Statistic + Update.
+        // Classic and Parametric share Estimator + Update.
         // For the same observe sequence, the share counters and
         // last_update_timestamp should track identically (until the
         // boundary-driven decision diverges and fires).
@@ -1329,20 +1531,14 @@ mod tests {
     }
 
     #[test]
-    fn run_paired_produces_identical_metrics_for_equivalent_algorithms() {
-        // ClassicComposed is asserted fire-for-fire equivalent to
-        // VardiffState in composed::equivalence_tests. Under
-        // `run_paired` (same seeds across algorithms) the metric values
-        // should match *exactly* — proves the paired-seed mechanism
-        // works as advertised.
-        //
-        // Under regular `Grid::run` (algo-indexed seeds) they would
-        // differ at the noise level (~1-2%) because each algorithm
-        // gets its own seed set. The contrast is the point of the test.
+    fn run_paired_produces_identical_metrics_for_same_algorithm_twice() {
+        // Two instances of the same algorithm under `run_paired` (same
+        // seeds) should produce identical metric values — proves the
+        // paired-seed mechanism works as advertised.
         let grid = Grid {
             algorithms: vec![
-                AlgorithmSpec::classic_vardiff_state(),
-                AlgorithmSpec::classic_composed(),
+                AlgorithmSpec::full_remedy(),
+                AlgorithmSpec::full_remedy_with(120, 0.2, 2.576),
             ],
             share_rates: vec![12.0],
             scenarios: vec![Scenario::Stable, Scenario::Step { delta_pct: -50 }],
@@ -1351,30 +1547,25 @@ mod tests {
         };
 
         let paired = grid.run_paired();
-        let vs = &paired["VardiffState"];
-        let cc = &paired["ClassicComposed"];
+        let a = &paired["FullRemedy"];
+        let b = &paired["FullRemedy-tau120-eta20-z2576"];
 
-        assert_eq!(vs.len(), cc.len());
-        for (vs_cell, cc_cell) in vs.iter().zip(cc.iter()) {
-            assert_eq!(vs_cell.shares_per_minute, cc_cell.shares_per_minute);
-            assert_eq!(vs_cell.scenario, cc_cell.scenario);
-            // Critical assertion: same algorithm + same trials =
-            // identical metric values.
+        assert_eq!(a.len(), b.len());
+        for (a_cell, b_cell) in a.iter().zip(b.iter()) {
+            assert_eq!(a_cell.shares_per_minute, b_cell.shares_per_minute);
+            assert_eq!(a_cell.scenario, b_cell.scenario);
             for metric_key in &[
                 "convergence_rate",
                 "settled_accuracy_p50",
-                "settled_accuracy_p90",
-                "jitter_p50_per_min",
                 "jitter_mean_per_min",
                 "reaction_rate",
-                "reaction_p50_secs",
             ] {
                 assert_eq!(
-                    vs_cell.get(metric_key),
-                    cc_cell.get(metric_key),
+                    a_cell.get(metric_key),
+                    b_cell.get(metric_key),
                     "{} mismatch on cell {:?}",
                     metric_key,
-                    vs_cell.scenario,
+                    a_cell.scenario,
                 );
             }
         }

@@ -4,8 +4,8 @@
 //! (human-readable, for PR review).
 //!
 //! A **cell** is one tuple of `(algorithm, share_rate, scenario)`. The
-//! default grid is 5 share rates × 10 scenarios = 50 cells. With
-//! `N=1000` trials per cell that's 50,000 trials and ~20 seconds of
+//! default grid is 8 share rates × 10 scenarios = 80 cells. With
+//! `N=1000` trials per cell that's 80,000 trials and ~30 seconds of
 //! wall clock at release-mode speed.
 //!
 //! ## Step-3 refactor
@@ -418,10 +418,10 @@ pub fn run_cell(cell: &Cell, trial_count: usize, base_seed: u64, cell_index: u64
     result
 }
 
-/// The default characterization grid: 5 share rates × 10 scenarios =
-/// 50 cells.
+/// The default characterization grid: 8 share rates × 10 scenarios =
+/// 80 cells.
 pub fn default_cells() -> Vec<Cell> {
-    let rates: [f32; 5] = [6.0, 12.0, 30.0, 60.0, 120.0];
+    let rates: [f32; 8] = [6.0, 8.0, 10.0, 12.0, 15.0, 20.0, 25.0, 30.0];
     let deltas: [i32; 8] = [-50, -25, -10, -5, 5, 10, 25, 50];
     let mut cells = Vec::new();
     for &spm in &rates {
@@ -813,8 +813,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_cells_has_50_entries() {
-        assert_eq!(default_cells().len(), 50);
+    fn default_cells_has_80_entries() {
+        assert_eq!(default_cells().len(), 80);
     }
 
     #[test]

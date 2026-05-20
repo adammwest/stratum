@@ -675,7 +675,7 @@ scenario = "stable_1ph"
         assert_eq!(report.current_cells_not_in_baseline.len(), 1);
     }
 
-    /// The slow regression test. Runs the full 50-cell baseline at the
+    /// The slow regression test. Runs the full 80-cell baseline at the
     /// same seed / trial_count as the checked-in baseline and asserts
     /// every cell is within tolerance.
     #[test]

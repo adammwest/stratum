@@ -91,7 +91,7 @@ fn main() -> std::io::Result<()> {
 
     let grid = Grid {
         algorithms,
-        share_rates: vec![6.0, 12.0, 30.0, 60.0, 120.0],
+        share_rates: vec![6.0, 8.0, 10.0, 12.0, 15.0, 20.0, 25.0, 30.0],
         scenarios,
         trial_count,
         base_seed,

@@ -153,6 +153,8 @@ fn algorithm_factory(name: &str) -> Result<AlgorithmSpec, String> {
         "ewma_60s" | "ewma" => AlgorithmSpec::ewma_60s(),
         "sliding_window" | "sliding" => AlgorithmSpec::sliding_window(10),
         "full_remedy" | "remedy" => AlgorithmSpec::full_remedy(),
+        "bayesian" | "bayes" => AlgorithmSpec::bayesian(0.95, 4.0, 0.2, 2.576),
+        "bayesian_ci" | "bayes_ci" => AlgorithmSpec::bayesian_ci(0.85, 4.0, 1.96, 0.3),
         other => return Err(format!("unknown algorithm: {other}")),
     })
 }

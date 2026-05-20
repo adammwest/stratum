@@ -2,7 +2,7 @@
 /// providing methods to verify the correctness of any specific implementation.
 use std::{thread, time::Duration};
 
-mod classic;
+
 
 use super::Vardiff;
 use crate::target::hash_rate_to_target;

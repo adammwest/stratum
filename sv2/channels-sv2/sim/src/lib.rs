@@ -3,9 +3,9 @@
 //! Deterministic in-process simulation harness for characterizing the
 //! behavioral attributes of any [`channels_sv2::vardiff::Vardiff`]
 //! implementation. The framework decomposes a vardiff algorithm into
-//! four orthogonal axes (Estimator, Statistic, Boundary, UpdateRule)
-//! and characterizes each in isolation so metric changes can be
-//! attributed to the axis that changed. See `sim/docs/DESIGN.md` for
+//! three sequential stages (Estimator, Boundary, UpdateRule) and
+//! characterizes each so metric changes can be attributed to the
+//! stage that changed. See `sim/docs/DESIGN.md` for
 //! the architectural reference and `sim/docs/FINDINGS.md` for the
 //! cross-algorithm characterization results.
 //!
@@ -17,7 +17,7 @@
 //!   a dense per-tick [`TickRecord`] timeline.
 //! - [`run_trial_observed`]: as above, but also populates the optional
 //!   introspection fields (δ, θ, H̃) for algorithms that implement
-//!   [`Observable`] (e.g. `Composed<E, S, B, U>` from the
+//!   [`Observable`] (e.g. `Composed<E, B, U>` from the
 //!   [`composed`] module).
 //! - [`HashrateSchedule`]: step-function description of the miner's true
 //!   hashrate over time — supports stable, step-change, and arbitrary
@@ -28,9 +28,9 @@
 //!   convergence time, settled accuracy, steady-state jitter, reaction time,
 //!   reaction sensitivity. Each metric returns a [`Distribution`] supporting
 //!   percentile queries (p10–p99), mean, and count.
-//! - [`composed`]: the four-axis decomposition (Estimator, Statistic,
-//!   Boundary, UpdateRule) and the `Composed<E, S, B, U>` adapter that
-//!   carries `impl Vardiff`.
+//! - [`composed`]: the three-stage pipeline (Estimator, Boundary,
+//!   UpdateRule) and the `Composed<E, B, U>` adapter that carries
+//!   `impl Vardiff`.
 //!
 //! ## Unit conventions
 //!
@@ -40,7 +40,7 @@
 //!
 //! | Location | Convention | Example |
 //! | --- | --- | --- |
-//! | Statistic / Boundary (`δ`, `θ` in [`composed`]) | percentage points | `δ = 60.0` ⇔ 60% |
+//! | Boundary threshold / deviation (`δ`, `θ` in [`composed`]) | percentage points | `δ = 60.0` ⇔ 60% |
 //! | `bias_*`, `ramp_target_overshoot_*` in [`MetricValues`] | fraction | `bias_mean = 0.10` ⇔ +10% |
 //! | `settled_accuracy_*` in [`MetricValues`] | fraction | `0.04` ⇔ 4% off truth |
 //! | `convergence_rate`, `reaction_rate` | fraction in [0, 1] | `0.95` ⇔ 95% |
@@ -48,7 +48,7 @@
 //! | `convergence_p*_secs`, `reaction_p*_secs` | seconds | `420.0` ⇔ 420 seconds |
 //! | `variance_*` | dimensionless (population variance of `H̃/H_true`) | `0.01` ⇔ σ²(H̃/H) = 0.01 |
 //!
-//! The Statistic/Boundary percentage-point convention is preserved for
+//! The percentage-point convention for δ and θ is preserved for
 //! bit-equivalence with `VardiffState`'s internal formula
 //! (`hashrate_delta_percentage = ... * 100.0`). Everywhere else uses
 //! fractions because the underlying math is fractional. Key names with
@@ -88,10 +88,10 @@ pub use grid::{
 };
 
 pub use composed::{
-    classic_composed, AbsoluteRatio, Boundary, ClassicComposed, Composed, CumulativeCounter,
-    Estimator, EstimatorContext, EstimatorSnapshot, EwmaEstimator, FullRetargetNoClamp,
-    FullRetargetWithClamp, PartialRetarget, PoissonCI, SlidingWindowEstimator, Statistic,
-    StepFunction, UpdateRule,
+    classic_composed, Boundary, ClassicComposed, Composed, CumulativeCounter, Estimator,
+    EstimatorContext, EstimatorSnapshot, EwmaEstimator, FullRetargetNoClamp,
+    FullRetargetWithClamp, PartialRetarget, PoissonCI, SlidingWindowEstimator, StepFunction,
+    UpdateRule,
 };
 
 pub use metrics::{
@@ -100,6 +100,7 @@ pub use metrics::{
     reaction_time_distribution, reaction_time_for_trial, registry, registry_by_id,
     settled_accuracy_distribution, settled_accuracy_for_trial, BaselineValue, Bias,
     ConvergenceTime, DecouplingScore, DerivedMetric, Direction, Distribution, Jitter, Metric,
+    OperationalFitness,
     MetricCategory, MetricClass, MetricValues, RampTargetOvershoot, ReactionAsymmetry,
     ReactionTime, ScenarioFilter, SettledAccuracy, SummaryFmt, SummarySpec, Tolerance,
     ToleranceCheck, Variance, CI_SEED, DEFAULT_CI_RESAMPLES, DEFAULT_JITTER_CEILING_PER_MIN,

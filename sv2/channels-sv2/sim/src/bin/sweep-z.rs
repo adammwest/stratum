@@ -86,7 +86,7 @@ fn main() -> std::io::Result<()> {
             .iter()
             .map(|&z| AlgorithmSpec::full_remedy_with(SWEEP_TAU_SECS, SWEEP_ETA, z))
             .collect(),
-        share_rates: vec![6.0, 12.0, 30.0, 60.0, 120.0],
+        share_rates: vec![6.0, 8.0, 10.0, 12.0, 15.0, 20.0, 25.0, 30.0],
         scenarios,
         trial_count,
         base_seed,

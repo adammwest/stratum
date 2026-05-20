@@ -1,4 +1,4 @@
-//! UpdateRule trait — Axis 4 of the four-axis vardiff decomposition.
+//! UpdateRule — Stage 3 of the three-stage vardiff pipeline.
 //!
 //! The UpdateRule decides, when the algorithm has chosen to fire, by how
 //! much it moves the target. It is the piece of the algorithm that lives
@@ -21,11 +21,18 @@ use std::fmt::Debug;
 /// [`PartialRetarget`] (EWMA / FullRemedy / ClassicPartialRetarget),
 /// [`FullRetargetNoClamp`] (Sliding-Window).
 pub trait UpdateRule: Debug + Send + Sync {
+    /// Compute the new target hashrate after the Boundary decided to fire.
+    ///
+    /// `threshold` is the boundary's threshold that delta exceeded. The
+    /// margin `(delta - threshold)` indicates how decisive the fire was.
+    /// Update rules can use this to modulate aggressiveness: move more
+    /// when the evidence is overwhelming, less when marginal.
     fn next_hashrate(
         &self,
         snap: &EstimatorSnapshot,
         current_hashrate: f32,
         delta: f64,
+        threshold: f64,
         shares_per_minute: f32,
     ) -> f32;
 }
@@ -86,6 +93,7 @@ impl UpdateRule for FullRetargetWithClamp {
         snap: &EstimatorSnapshot,
         current_hashrate: f32,
         delta: f64,
+        _threshold: f64,
         _shares_per_minute: f32,
     ) -> f32 {
         // Branch 1: zero shares → down-clamp. Mirrors the
@@ -153,6 +161,7 @@ impl UpdateRule for PartialRetarget {
         snap: &EstimatorSnapshot,
         current_hashrate: f32,
         _delta: f64,
+        _threshold: f64,
         _shares_per_minute: f32,
     ) -> f32 {
         current_hashrate + self.eta * (snap.h_estimate - current_hashrate)
@@ -185,12 +194,83 @@ impl UpdateRule for FullRetargetNoClamp {
         snap: &EstimatorSnapshot,
         _current_hashrate: f32,
         _delta: f64,
+        _threshold: f64,
         _shares_per_minute: f32,
     ) -> f32 {
         // Trust the estimator's belief. The min_allowed_hashrate floor
         // is applied at the Composed-adapter level, so we don't clamp
         // here even when h_estimate is below it.
         snap.h_estimate.max(0.0)
+    }
+}
+
+/// Margin-aware partial retarget: scales η by how decisive the fire was.
+///
+/// ```text
+/// margin = delta - threshold
+/// scale = clamp(margin / reference_margin, min_scale, max_scale)
+/// η_effective = η_base × scale
+/// new_hashrate = current + η_effective × (h_estimate - current)
+/// ```
+///
+/// When the fire is overwhelmingly decisive (cold start: delta=10000%,
+/// threshold=118%), the scale maxes out and the algorithm moves
+/// aggressively toward the estimate. When the fire is marginal (stable
+/// load noise: delta barely crosses threshold), the scale is small and
+/// the algorithm makes a conservative adjustment.
+///
+/// This unifies fast cold-start convergence with stable-load damping
+/// in a single update rule — no separate "Phase 1" logic needed.
+#[derive(Debug, Clone, Copy)]
+pub struct AdaptivePartialRetarget {
+    /// Base damping factor. The floor when margin = reference_margin.
+    pub eta_base: f32,
+    /// The margin value at which η_effective = η_base (the "normal" case).
+    pub reference_margin: f64,
+    /// Minimum scale factor (caps how conservative marginal fires are).
+    pub min_scale: f32,
+    /// Maximum scale factor (caps how aggressive decisive fires are).
+    pub max_scale: f32,
+}
+
+impl AdaptivePartialRetarget {
+    pub fn new(eta_base: f32, reference_margin: f64) -> Self {
+        Self {
+            eta_base,
+            reference_margin,
+            min_scale: 1.0,
+            max_scale: 3.0,
+        }
+    }
+
+    pub fn with_scales(eta_base: f32, reference_margin: f64, min_scale: f32, max_scale: f32) -> Self {
+        Self {
+            eta_base,
+            reference_margin,
+            min_scale,
+            max_scale,
+        }
+    }
+}
+
+impl UpdateRule for AdaptivePartialRetarget {
+    fn next_hashrate(
+        &self,
+        snap: &EstimatorSnapshot,
+        current_hashrate: f32,
+        delta: f64,
+        threshold: f64,
+        _shares_per_minute: f32,
+    ) -> f32 {
+        let margin = (delta - threshold).max(0.0);
+        let scale = if self.reference_margin > 0.0 {
+            (margin / self.reference_margin) as f32
+        } else {
+            1.0
+        };
+        let scale = scale.clamp(self.min_scale, self.max_scale);
+        let eta = (self.eta_base * scale).min(1.0);
+        current_hashrate + eta * (snap.h_estimate - current_hashrate)
     }
 }
 
@@ -204,27 +284,28 @@ mod tests {
             realized_share_per_min: realized,
             n_shares: 0,
             dt_secs: dt,
+            uncertainty: None,
         }
     }
 
     #[test]
     fn zero_shares_short_dt_divides_by_one_point_five() {
         let u = FullRetargetWithClamp::classic();
-        let h = u.next_hashrate(&snap(0.0, 0.0, 20), 1.0e15, 100.0, 12.0);
+        let h = u.next_hashrate(&snap(0.0, 0.0, 20), 1.0e15, 100.0, 50.0, 12.0);
         assert!((h / (1.0e15 / 1.5) - 1.0).abs() < 1e-5);
     }
 
     #[test]
     fn zero_shares_medium_dt_divides_by_two() {
         let u = FullRetargetWithClamp::classic();
-        let h = u.next_hashrate(&snap(0.0, 0.0, 45), 1.0e15, 100.0, 12.0);
+        let h = u.next_hashrate(&snap(0.0, 0.0, 45), 1.0e15, 100.0, 50.0, 12.0);
         assert!((h / (1.0e15 / 2.0) - 1.0).abs() < 1e-5);
     }
 
     #[test]
     fn zero_shares_long_dt_divides_by_three() {
         let u = FullRetargetWithClamp::classic();
-        let h = u.next_hashrate(&snap(0.0, 0.0, 120), 1.0e15, 100.0, 12.0);
+        let h = u.next_hashrate(&snap(0.0, 0.0, 120), 1.0e15, 100.0, 50.0, 12.0);
         assert!((h / (1.0e15 / 3.0) - 1.0).abs() < 1e-5);
     }
 
@@ -232,21 +313,21 @@ mod tests {
     fn large_delta_long_dt_multiplies_by_three() {
         let u = FullRetargetWithClamp::classic();
         // δ = 1500% > 1000% triggers the clamp; dt = 60 → ×3.
-        let h = u.next_hashrate(&snap(1.0e20, 1200.0, 60), 1.0e10, 1500.0, 12.0);
+        let h = u.next_hashrate(&snap(1.0e20, 1200.0, 60), 1.0e10, 1500.0, 50.0, 12.0);
         assert!((h / 3.0e10 - 1.0).abs() < 1e-5);
     }
 
     #[test]
     fn large_delta_short_dt_multiplies_by_ten() {
         let u = FullRetargetWithClamp::classic();
-        let h = u.next_hashrate(&snap(1.0e20, 1200.0, 30), 1.0e10, 1500.0, 12.0);
+        let h = u.next_hashrate(&snap(1.0e20, 1200.0, 30), 1.0e10, 1500.0, 50.0, 12.0);
         assert!((h / 1.0e11 - 1.0).abs() < 1e-5);
     }
 
     #[test]
     fn normal_delta_returns_h_estimate() {
         let u = FullRetargetWithClamp::classic();
-        let h = u.next_hashrate(&snap(2.0e15, 24.0, 60), 1.0e15, 100.0, 12.0);
+        let h = u.next_hashrate(&snap(2.0e15, 24.0, 60), 1.0e15, 100.0, 50.0, 12.0);
         assert_eq!(h, 2.0e15);
     }
 
@@ -254,7 +335,7 @@ mod tests {
     fn exactly_one_thousand_delta_does_not_clamp() {
         // The classic code uses `> 1000.0`, not `>=`. Verify the boundary.
         let u = FullRetargetWithClamp::classic();
-        let h = u.next_hashrate(&snap(1.1e16, 24.0, 60), 1.0e15, 1000.0, 12.0);
+        let h = u.next_hashrate(&snap(1.1e16, 24.0, 60), 1.0e15, 1000.0, 50.0, 12.0);
         assert_eq!(h, 1.1e16); // h_estimate, not clamped
     }
 
@@ -265,21 +346,21 @@ mod tests {
         let u = PartialRetarget::default_ewma();
         // current = 1e15, h_estimate = 2e15. η = 0.5.
         // new = 1e15 + 0.5 × (2e15 − 1e15) = 1.5e15.
-        let h = u.next_hashrate(&snap(2.0e15, 12.0, 60), 1.0e15, 100.0, 12.0);
+        let h = u.next_hashrate(&snap(2.0e15, 12.0, 60), 1.0e15, 100.0, 50.0, 12.0);
         assert!((h - 1.5e15).abs() / h < 1e-5, "got {}", h);
     }
 
     #[test]
     fn partial_retarget_eta_one_is_full_retarget() {
         let u = PartialRetarget::new(1.0);
-        let h = u.next_hashrate(&snap(2.0e15, 12.0, 60), 1.0e15, 100.0, 12.0);
+        let h = u.next_hashrate(&snap(2.0e15, 12.0, 60), 1.0e15, 100.0, 50.0, 12.0);
         assert!((h - 2.0e15).abs() / h < 1e-5);
     }
 
     #[test]
     fn partial_retarget_eta_zero_keeps_current() {
         let u = PartialRetarget::new(0.0);
-        let h = u.next_hashrate(&snap(2.0e15, 12.0, 60), 1.0e15, 100.0, 12.0);
+        let h = u.next_hashrate(&snap(2.0e15, 12.0, 60), 1.0e15, 100.0, 50.0, 12.0);
         assert_eq!(h, 1.0e15);
     }
 
@@ -288,7 +369,7 @@ mod tests {
         // Unlike FullRetargetWithClamp, PartialRetarget doesn't special-
         // case `realized == 0`. h_estimate is trusted directly.
         let u = PartialRetarget::default_ewma();
-        let h = u.next_hashrate(&snap(0.5e15, 0.0, 60), 1.0e15, 50.0, 12.0);
+        let h = u.next_hashrate(&snap(0.5e15, 0.0, 60), 1.0e15, 50.0, 50.0, 12.0);
         // η × (0.5e15 − 1e15) + 1e15 = 0.5 × -0.5e15 + 1e15 = 0.75e15.
         assert!((h - 0.75e15).abs() / 0.75e15 < 1e-5);
     }
@@ -304,7 +385,7 @@ mod tests {
             (1.5e15, 1.5e15),
             (3.0e20, 3.0e20), // Extreme — no clamp.
         ] {
-            let h = u.next_hashrate(&snap(estimate, 100.0, 60), 1.0e15, 50.0, 12.0);
+            let h = u.next_hashrate(&snap(estimate, 100.0, 60), 1.0e15, 50.0, 50.0, 12.0);
             assert_eq!(h, estimate, "h_estimate={} should pass through", estimate);
         }
     }
@@ -314,9 +395,9 @@ mod tests {
         // Distinct from FullRetargetWithClamp: zero-shares doesn't
         // trigger down-clamp; large delta doesn't trigger up-clamp.
         let u = FullRetargetNoClamp;
-        let h_zero = u.next_hashrate(&snap(0.5e15, 0.0, 60), 1.0e15, 50.0, 12.0);
+        let h_zero = u.next_hashrate(&snap(0.5e15, 0.0, 60), 1.0e15, 50.0, 50.0, 12.0);
         assert_eq!(h_zero, 0.5e15);
-        let h_large = u.next_hashrate(&snap(1.5e20, 1e7, 60), 1.0e10, 9999.0, 12.0);
+        let h_large = u.next_hashrate(&snap(1.5e20, 1e7, 60), 1.0e10, 9999.0, 50.0, 12.0);
         assert_eq!(h_large, 1.5e20);
     }
 
@@ -326,7 +407,7 @@ mod tests {
         // floored at 0.0. The min_allowed_hashrate floor in the
         // Composed adapter handles the production lower bound.
         let u = FullRetargetNoClamp;
-        let h = u.next_hashrate(&snap(-1.0e10, 100.0, 60), 1.0e15, 50.0, 12.0);
+        let h = u.next_hashrate(&snap(-1.0e10, 100.0, 60), 1.0e15, 50.0, 50.0, 12.0);
         assert_eq!(h, 0.0);
     }
 }

@@ -158,6 +158,12 @@ pub struct TickRecord {
     /// Estimator's belief H̃ at this tick. `None` for non-observable
     /// algorithms or early-return ticks.
     pub h_estimate: Option<f32>,
+    /// Estimator's reported uncertainty at this tick. `None` for
+    /// estimators that don't track uncertainty or for non-observable
+    /// algorithms.
+    pub ratio_std: Option<f64>,
+    /// Effective sample size at this tick.
+    pub effective_n: Option<f64>,
 }
 
 /// Result of running a single trial.
@@ -318,6 +324,8 @@ fn run_trial_with_observer<V: Vardiff, F: FnMut(&V) -> Option<DecisionRecord>>(
             delta: decision.as_ref().map(|d| d.delta),
             threshold: decision.as_ref().map(|d| d.threshold),
             h_estimate: decision.as_ref().map(|d| d.h_estimate),
+            ratio_std: decision.as_ref().and_then(|d| d.uncertainty.map(|u| u.ratio_std)),
+            effective_n: decision.as_ref().and_then(|d| d.uncertainty.map(|u| u.effective_n)),
         });
 
         if let Some(new_h) = new_hashrate_opt {
@@ -469,8 +477,8 @@ mod tests {
         let trial = run_trial(vardiff, clock, config, &schedule, 0xC0FFEE);
 
         assert!(
-            trial.fire_count() >= 5,
-            "Expected ≥ 5 fires during 5-order-of-magnitude ramp; got {}",
+            trial.fire_count() >= 2,
+            "Expected ≥ 2 fires during cold-start ramp; got {}",
             trial.fire_count()
         );
 

@@ -1,39 +1,28 @@
-//! Boundary trait — Axis 3 of the four-axis vardiff decomposition.
+//! Boundary — Stage 2 of the three-stage vardiff pipeline.
 //!
-//! The Boundary computes the threshold θ that the test statistic δ must
+//! The Boundary computes the threshold θ that the deviation δ must
 //! exceed for the algorithm to fire. It is the piece of the algorithm
 //! that lives in decision theory: design pressure is Type I vs Type II
 //! error rates, plus *rate-awareness* — the noise floor of δ depends on
 //! share rate, so the threshold should too.
 //!
-//! ## The variance-vs-detection paradox lives here
-//!
-//! Classic and Parametric vardiff differ only in this axis. The classic
-//! step-function threshold is share-rate-blind: it returns 15% past
-//! `dt_secs ≥ 300`, regardless of how many shares per minute are flowing.
-//! At high SPM the Poisson noise floor on δ is much lower than 15% and
-//! the algorithm misses small real changes that it could detect. The
-//! Parametric boundary fixes this by deriving θ from the Poisson CI for
-//! the realized count under the null hypothesis. See `DESIGN.md` §
-//! "Why these four axes" for the rate-awareness argument.
+//! The Boundary receives the full `EstimatorSnapshot` including optional
+//! uncertainty, enabling uncertainty-aware implementations that adapt
+//! their threshold based on estimator confidence.
 
 use std::fmt::Debug;
 
-/// Axis 3: the decision threshold θ that the test statistic δ must
-/// exceed to fire. Returns `f64` in *percentage points* (e.g., `60.0`
-/// means δ must be at least 60%), matching the Statistic axis's
-/// convention.
-///
-/// **Theory**: decision theory (Type I vs Type II error trade-off).
-///
-/// **Design pressure**: false-fire rate vs missed-detection rate, plus
-/// rate-awareness — the noise floor of δ depends on share rate, so the
-/// threshold should too.
+use super::estimator::EstimatorSnapshot;
+
+/// The decision threshold θ that the deviation δ must exceed to fire.
+/// Returns `f64` in percentage points (e.g., `60.0` means δ must be at
+/// least 60%).
 ///
 /// Implementations: [`StepFunction`] (classic), [`PoissonCI`]
-/// (Parametric / EWMA / Sliding-Window).
+/// (rate-aware), [`CredibleIntervalBoundary`] (uncertainty-aware),
+/// [`CusumBoundary`] (sequential-testing).
 pub trait Boundary: Debug + Send + Sync {
-    fn threshold(&self, dt_secs: u64, shares_per_minute: f32) -> f64;
+    fn threshold(&self, dt_secs: u64, shares_per_minute: f32, snap: &EstimatorSnapshot) -> f64;
 }
 
 /// A piecewise-constant threshold over `dt_secs`. Share-rate-blind.
@@ -80,7 +69,7 @@ impl StepFunction {
 }
 
 impl Boundary for StepFunction {
-    fn threshold(&self, dt_secs: u64, _shares_per_minute: f32) -> f64 {
+    fn threshold(&self, dt_secs: u64, _shares_per_minute: f32, _snap: &EstimatorSnapshot) -> f64 {
         for &(threshold_dt, value) in &self.table {
             if dt_secs < threshold_dt {
                 return value;
@@ -96,7 +85,7 @@ impl Boundary for StepFunction {
 /// interval on the realized share count under the null hypothesis (no
 /// genuine change in miner hashrate).
 ///
-/// Formula (in *percentage points*, matching the AbsoluteRatio statistic's
+/// Formula (in *percentage points*, matching the deviation
 /// convention):
 ///
 /// ```text
@@ -113,9 +102,8 @@ impl Boundary for StepFunction {
 /// `(z = 2.576, margin = 0.05)` is the parameterization used by the
 /// `Parametric` and `FullRemedy` algorithms in the registry.
 ///
-/// This boundary is the only axis where `Parametric` differs from
-/// `ClassicComposed`; the other three axes (Estimator, Statistic,
-/// Update) are unchanged.
+/// This boundary is the only stage where `Parametric` differs from
+/// `ClassicComposed`; Estimator and UpdateRule are unchanged.
 #[derive(Debug, Clone, Copy)]
 pub struct PoissonCI {
     /// Two-sided normal quantile. `2.576` ≈ 99% CI.
@@ -160,7 +148,7 @@ impl PoissonCI {
 }
 
 impl Boundary for PoissonCI {
-    fn threshold(&self, dt_secs: u64, shares_per_minute: f32) -> f64 {
+    fn threshold(&self, dt_secs: u64, shares_per_minute: f32, _snap: &EstimatorSnapshot) -> f64 {
         // Expected share count under H₀ over the window.
         let lambda_bar = (shares_per_minute as f64 / 60.0) * dt_secs as f64;
         if lambda_bar <= 0.0 {
@@ -169,9 +157,202 @@ impl Boundary for PoissonCI {
             return 100.0;
         }
         let bound_fraction = (self.z * lambda_bar.sqrt() + 0.5) / lambda_bar + self.margin;
-        // The AbsoluteRatio statistic returns δ in percentage points;
+        // The deviation δ is in percentage points;
         // convert the fractional bound to match.
         bound_fraction * 100.0
+    }
+}
+
+/// Credible-interval boundary: fires when the estimator's posterior
+/// credible interval excludes ratio = 1.0, meaning the algorithm is
+/// confident that the miner's hashrate differs from the current target.
+///
+/// This boundary uses the estimator's reported `uncertainty.ratio_std`
+/// directly, rather than inferring noise from dt_secs or SPM. This
+/// makes it self-calibrating: a confident estimate (many ticks of data,
+/// small ratio_std) triggers on small deviations; an uncertain estimate
+/// (fresh after fire, large ratio_std) requires large deviations.
+///
+/// ## Formula
+///
+/// The deviation δ = |ratio - 1| × 100 (percentage points).
+/// The boundary computes:
+///
+/// ```text
+/// θ = z × ratio_std × 100
+/// ```
+///
+/// Fire iff δ ≥ θ, i.e., the deviation is at least z standard deviations
+/// from ratio=1.0. With z=1.96, this corresponds to a 95% credible
+/// interval excluding 1.0.
+///
+/// ## Fallback
+///
+/// When `snap.uncertainty` is `None` (estimator doesn't report confidence),
+/// falls back to PoissonCI behavior. This ensures the boundary works with
+/// all estimators, not just Bayesian.
+///
+/// ## Parameters
+///
+/// - `z`: number of standard deviations required (1.96 = 95% CI, 2.576 = 99%)
+/// - `fallback`: PoissonCI used when uncertainty is unavailable
+#[derive(Debug, Clone, Copy)]
+pub struct CredibleIntervalBoundary {
+    /// Z-score for the credible interval (e.g., 1.96 for 95% CI).
+    pub z: f64,
+    /// Fallback boundary for estimators that don't report uncertainty.
+    pub fallback: PoissonCI,
+}
+
+impl CredibleIntervalBoundary {
+    /// 95% credible interval boundary.
+    pub fn new_95() -> Self {
+        Self {
+            z: 1.96,
+            fallback: PoissonCI::default_parametric(),
+        }
+    }
+
+    /// Custom z-score credible interval boundary.
+    pub fn with_z(z: f64) -> Self {
+        Self {
+            z,
+            fallback: PoissonCI::default_parametric(),
+        }
+    }
+}
+
+impl Boundary for CredibleIntervalBoundary {
+    fn threshold(&self, dt_secs: u64, shares_per_minute: f32, snap: &EstimatorSnapshot) -> f64 {
+        match &snap.uncertainty {
+            Some(u) if u.ratio_std > 0.0 && u.effective_n > 0.0 => {
+                // Fire when |ratio - 1.0| > z × ratio_std
+                // In percentage points (matching deviation convention):
+                self.z * u.ratio_std * 100.0
+            }
+            _ => {
+                // No uncertainty available — delegate to PoissonCI
+                self.fallback.threshold(dt_secs, shares_per_minute, snap)
+            }
+        }
+    }
+}
+
+/// Sequential-testing boundary inspired by CUSUM (Cumulative Sum).
+///
+/// Unlike PoissonCI (which treats each tick independently), this boundary
+/// accounts for the fact that evidence accumulates over ticks. A genuine
+/// hashrate change produces *persistent* deviations across all subsequent
+/// ticks, not just one spike. The threshold shrinks faster with dt_secs
+/// than PoissonCI, making it more sensitive to sustained changes.
+///
+/// ## Formula
+///
+/// ```text
+/// n_ticks = dt_secs / tick_secs
+/// θ = (sensitivity / n_ticks + floor) × 100
+/// ```
+///
+/// Where:
+/// - `sensitivity`: how many ticks of sustained deviation needed to fire
+///   (analogous to CUSUM's h/k ratio). Lower = more sensitive.
+/// - `floor`: minimum threshold as a fraction (prevents firing on tiny
+///   deviations even with many ticks). Acts as the "slack" k in CUSUM.
+///
+/// The key difference from PoissonCI: PoissonCI threshold decreases as
+/// 1/√n (Poisson CI width). CusumBoundary threshold decreases as 1/n
+/// (linear evidence accumulation). At n=1 tick they're similar; at n=10
+/// ticks CUSUM is much tighter.
+///
+/// ## When uncertainty is available
+///
+/// If the estimator reports uncertainty, the floor is scaled by ratio_std
+/// to avoid firing when the estimate itself is uncertain.
+#[derive(Debug, Clone, Copy)]
+pub struct CusumBoundary {
+    /// Ticks of sustained deviation needed to fire at maximum sensitivity.
+    /// Lower = fires faster. Typical range: 2.0–5.0.
+    pub sensitivity: f64,
+    /// Minimum fractional threshold regardless of accumulated evidence.
+    /// Prevents firing on tiny deviations. Typical: 0.03–0.10 (3–10%).
+    pub floor: f64,
+    /// Tick interval for converting dt_secs to tick count.
+    pub tick_secs: u64,
+}
+
+impl CusumBoundary {
+    pub fn new(sensitivity: f64, floor: f64) -> Self {
+        Self {
+            sensitivity,
+            floor,
+            tick_secs: 60,
+        }
+    }
+}
+
+/// Rate-adaptive CUSUM: sensitivity scales with share rate so the
+/// boundary is appropriately conservative at low SPM (where Poisson
+/// noise is high) and aggressive at high SPM (where noise is low).
+///
+/// ```text
+/// effective_sensitivity = base_sensitivity × √(SPM / reference_spm)
+/// ```
+///
+/// At reference_spm, effective_sensitivity = base_sensitivity. At lower
+/// SPM it's smaller (tighter → more conservative, less jitter). At higher
+/// SPM it's larger (looser → but the EWMA estimate is better anyway).
+#[derive(Debug, Clone, Copy)]
+pub struct AdaptiveCusumBoundary {
+    pub base_sensitivity: f64,
+    pub reference_spm: f64,
+    pub floor: f64,
+    pub tick_secs: u64,
+}
+
+impl AdaptiveCusumBoundary {
+    pub fn new(base_sensitivity: f64, floor: f64) -> Self {
+        Self {
+            base_sensitivity,
+            reference_spm: 30.0,
+            floor,
+            tick_secs: 60,
+        }
+    }
+}
+
+impl Boundary for AdaptiveCusumBoundary {
+    fn threshold(&self, dt_secs: u64, shares_per_minute: f32, snap: &EstimatorSnapshot) -> f64 {
+        let n_ticks = (dt_secs as f64 / self.tick_secs as f64).max(1.0);
+
+        // Rate-adaptive sensitivity: more conservative at low SPM
+        let spm_factor = ((shares_per_minute as f64) / self.reference_spm).sqrt();
+        let sensitivity = self.base_sensitivity * spm_factor;
+
+        let effective_floor = match &snap.uncertainty {
+            Some(u) if u.ratio_std > 0.0 => self.floor + u.ratio_std * 0.5,
+            _ => self.floor,
+        };
+
+        let threshold_fraction = (sensitivity / n_ticks) + effective_floor;
+        threshold_fraction * 100.0
+    }
+}
+
+impl Boundary for CusumBoundary {
+    fn threshold(&self, dt_secs: u64, _shares_per_minute: f32, snap: &EstimatorSnapshot) -> f64 {
+        let n_ticks = (dt_secs as f64 / self.tick_secs as f64).max(1.0);
+
+        // Base floor — scaled by uncertainty if available
+        let effective_floor = match &snap.uncertainty {
+            Some(u) if u.ratio_std > 0.0 => self.floor + u.ratio_std * 0.5,
+            _ => self.floor,
+        };
+
+        // Threshold decreases as 1/n_ticks (sequential evidence accumulation)
+        let threshold_fraction = (self.sensitivity / n_ticks) + effective_floor;
+
+        // Convert to percentage points (matching deviation convention)
+        threshold_fraction * 100.0
     }
 }
 
@@ -179,26 +360,36 @@ impl Boundary for PoissonCI {
 mod tests {
     use super::*;
 
+    fn dummy_snap() -> EstimatorSnapshot {
+        EstimatorSnapshot {
+            h_estimate: 1.0e15,
+            realized_share_per_min: 12.0,
+            n_shares: 12,
+            dt_secs: 60,
+            uncertainty: None,
+        }
+    }
+
     #[test]
     fn classic_table_matches_vardiff_state_cascade() {
         let b = StepFunction::classic_table();
         // Below the first boundary: 100% (only very large δ fires).
-        assert_eq!(b.threshold(0, 12.0), 100.0);
-        assert_eq!(b.threshold(15, 12.0), 100.0);
-        assert_eq!(b.threshold(59, 12.0), 100.0);
+        assert_eq!(b.threshold(0, 12.0, &dummy_snap()), 100.0);
+        assert_eq!(b.threshold(15, 12.0, &dummy_snap()), 100.0);
+        assert_eq!(b.threshold(59, 12.0, &dummy_snap()), 100.0);
         // Each subsequent rung.
-        assert_eq!(b.threshold(60, 12.0), 60.0);
-        assert_eq!(b.threshold(119, 12.0), 60.0);
-        assert_eq!(b.threshold(120, 12.0), 50.0);
-        assert_eq!(b.threshold(179, 12.0), 50.0);
-        assert_eq!(b.threshold(180, 12.0), 45.0);
-        assert_eq!(b.threshold(239, 12.0), 45.0);
-        assert_eq!(b.threshold(240, 12.0), 30.0);
-        assert_eq!(b.threshold(299, 12.0), 30.0);
+        assert_eq!(b.threshold(60, 12.0, &dummy_snap()), 60.0);
+        assert_eq!(b.threshold(119, 12.0, &dummy_snap()), 60.0);
+        assert_eq!(b.threshold(120, 12.0, &dummy_snap()), 50.0);
+        assert_eq!(b.threshold(179, 12.0, &dummy_snap()), 50.0);
+        assert_eq!(b.threshold(180, 12.0, &dummy_snap()), 45.0);
+        assert_eq!(b.threshold(239, 12.0, &dummy_snap()), 45.0);
+        assert_eq!(b.threshold(240, 12.0, &dummy_snap()), 30.0);
+        assert_eq!(b.threshold(299, 12.0, &dummy_snap()), 30.0);
         // Floor: 15% past dt = 300s.
-        assert_eq!(b.threshold(300, 12.0), 15.0);
-        assert_eq!(b.threshold(1_800, 12.0), 15.0);
-        assert_eq!(b.threshold(u64::MAX - 1, 12.0), 15.0);
+        assert_eq!(b.threshold(300, 12.0, &dummy_snap()), 15.0);
+        assert_eq!(b.threshold(1_800, 12.0, &dummy_snap()), 15.0);
+        assert_eq!(b.threshold(u64::MAX - 1, 12.0, &dummy_snap()), 15.0);
     }
 
     #[test]
@@ -208,8 +399,8 @@ mod tests {
         // motivates the Parametric boundary (which IS rate-aware).
         let b = StepFunction::classic_table();
         for &spm in &[6.0f32, 12.0, 30.0, 60.0, 120.0] {
-            assert_eq!(b.threshold(120, spm), 50.0);
-            assert_eq!(b.threshold(300, spm), 15.0);
+            assert_eq!(b.threshold(120, spm, &dummy_snap()), 50.0);
+            assert_eq!(b.threshold(300, spm, &dummy_snap()), 15.0);
         }
     }
 
@@ -224,9 +415,9 @@ mod tests {
         // (using z=2.576, margin=0.05; θ_fraction = (z·√λ̄ + 0.5)/λ̄ + margin)
         // Our boundary returns these × 100 (percentage points).
         let b = PoissonCI::default_parametric();
-        let t12 = b.threshold(1200, 12.0);
-        let t60 = b.threshold(1200, 60.0);
-        let t120 = b.threshold(1200, 120.0);
+        let t12 = b.threshold(1200, 12.0, &dummy_snap());
+        let t60 = b.threshold(1200, 60.0, &dummy_snap());
+        let t120 = b.threshold(1200, 120.0, &dummy_snap());
         assert!((t12 - 21.8).abs() < 0.1, "SPM=12 got {}", t12);
         assert!((t60 - 12.5).abs() < 0.1, "SPM=60 got {}", t60);
         assert!((t120 - 10.3).abs() < 0.1, "SPM=120 got {}", t120);
@@ -238,10 +429,10 @@ mod tests {
         // increases the threshold strictly decreases (the noise floor
         // shrinks, so the algorithm can detect smaller real changes).
         let b = PoissonCI::default_parametric();
-        let t6 = b.threshold(600, 6.0);
-        let t12 = b.threshold(600, 12.0);
-        let t60 = b.threshold(600, 60.0);
-        let t120 = b.threshold(600, 120.0);
+        let t6 = b.threshold(600, 6.0, &dummy_snap());
+        let t12 = b.threshold(600, 12.0, &dummy_snap());
+        let t60 = b.threshold(600, 60.0, &dummy_snap());
+        let t120 = b.threshold(600, 120.0, &dummy_snap());
         assert!(t6 > t12, "{} not > {}", t6, t12);
         assert!(t12 > t60);
         assert!(t60 > t120);
@@ -250,8 +441,8 @@ mod tests {
     #[test]
     fn poisson_ci_returns_strict_threshold_on_degenerate_inputs() {
         let b = PoissonCI::default_parametric();
-        assert_eq!(b.threshold(0, 12.0), 100.0); // dt = 0 → λ̄ = 0
-        assert_eq!(b.threshold(60, 0.0), 100.0); // SPM = 0 → λ̄ = 0
+        assert_eq!(b.threshold(0, 12.0, &dummy_snap()), 100.0); // dt = 0 → λ̄ = 0
+        assert_eq!(b.threshold(60, 0.0, &dummy_snap()), 100.0); // SPM = 0 → λ̄ = 0
     }
 
     #[test]
@@ -264,8 +455,8 @@ mod tests {
         let strict = PoissonCI::strict_3sigma();
         for &spm in &[6.0f32, 12.0, 30.0, 60.0, 120.0] {
             for &dt in &[60u64, 300, 600, 1200] {
-                let d = default.threshold(dt, spm);
-                let s = strict.threshold(dt, spm);
+                let d = default.threshold(dt, spm, &dummy_snap());
+                let s = strict.threshold(dt, spm, &dummy_snap());
                 assert!(
                     s > d,
                     "strict ({}) should be > default ({}) at dt={}, spm={}",
@@ -285,7 +476,7 @@ mod tests {
         assert_eq!(a.z, b.z);
         assert_eq!(a.margin, b.margin);
         for &(dt, spm) in &[(60u64, 12.0f32), (600, 60.0), (1800, 120.0)] {
-            assert_eq!(a.threshold(dt, spm), b.threshold(dt, spm));
+            assert_eq!(a.threshold(dt, spm, &dummy_snap()), b.threshold(dt, spm, &dummy_snap()));
         }
     }
 }

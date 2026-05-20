@@ -7,6 +7,8 @@
 //! populate the per-tick `delta` / `threshold` / `h_estimate` columns
 //! in the characterization output.
 
+use super::estimator::Uncertainty;
+
 /// The per-tick algorithm state captured by `Composed::try_vardiff`
 /// just after δ and θ are computed.
 #[derive(Debug, Clone, Copy)]
@@ -17,4 +19,7 @@ pub struct DecisionRecord {
     pub threshold: f64,
     /// Estimator's belief about miner hashrate at this tick.
     pub h_estimate: f32,
+    /// Estimator's reported uncertainty at this tick (None if estimator
+    /// doesn't track uncertainty).
+    pub uncertainty: Option<Uncertainty>,
 }

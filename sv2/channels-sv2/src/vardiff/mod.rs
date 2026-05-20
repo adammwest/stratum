@@ -63,21 +63,17 @@ pub trait Vardiff: Debug + Send + Sync {
 
 /// Constructs the recommended production vardiff.
 ///
-/// Returns a [`Box<dyn Vardiff>`] wrapping the four-axis `FullRemedy`
-/// composition: `EwmaEstimator(120s) + AbsoluteRatio +
-/// PoissonCI(z = 2.576, margin = 0.05) + PartialRetarget(η = 0.2)`. Uses
-/// [`DEFAULT_MIN_HASHRATE`] as the minimum hashrate floor and a
-/// [`SystemClock`] for time.
+/// Returns a [`Box<dyn Vardiff>`] wrapping the `AdaCUSUM` composition:
+/// `EwmaEstimator(120s) + AdaptiveCusumBoundary(s=1.5, floor=0.05) +
+/// PartialRetarget(η = 0.2)`. Uses [`DEFAULT_MIN_HASHRATE`] as the
+/// minimum hashrate floor and a [`SystemClock`] for time.
 ///
-/// `FullRemedy` empirically dominates the historical
-/// [`classic::VardiffState`] threshold-ladder algorithm on every
-/// operationally meaningful metric — convergence rate, reaction
-/// sensitivity at ±5/10/25/50% steps, ramp target overshoot tail,
-/// decoupling score. See `sim/docs/FINDINGS.md` for the validation,
-/// `sim/docs/DESIGN.md` for the four-axis architectural rationale, and
-/// the per-parameter Pareto sweeps in `sim/eta_sweep.md`,
-/// `sim/z_sweep.md`, `sim/ewma_tau_sweep.md`, and
-/// `sim/eta_z_joint_sweep.md` for the parameter substantiation.
+/// `AdaCUSUM` dominates the previous `FullRemedy` (PoissonCI boundary)
+/// at every share rate in the operational range (SPM=6-30) under the
+/// `operational_fitness` metric. The improvement comes from 2-3x better
+/// detection of small hashrate changes via sequential evidence
+/// accumulation. See `sim/docs/FINDINGS.md` for the validation and
+/// `sim/docs/DESIGN.md` for the three-stage pipeline architecture.
 ///
 /// This is the recommended entry point for new production code. For
 /// custom min-hashrate floors, use [`default_with_min`]. For a custom
@@ -104,5 +100,8 @@ pub fn default_with_min(min_allowed_hashrate: f32) -> Box<dyn Vardiff> {
 /// [`MockClock`] lets the algorithm run against controlled time. See
 /// [`default`] for the underlying composition.
 pub fn default_with_clock(min_allowed_hashrate: f32, clock: Arc<dyn Clock>) -> Box<dyn Vardiff> {
-    classic::VardiffState::production_default(min_allowed_hashrate, clock)
+    Box::new(
+        classic::VardiffState::new_with_clock(min_allowed_hashrate, clock)
+            .expect("VardiffState construction should not fail"),
+    )
 }
