@@ -42,12 +42,12 @@ impl VardiffState {
         clock: Arc<dyn Clock>,
     ) -> Result<Self, VardiffError> {
         use crate::vardiff::composed::{
-            AdaptiveCusumBoundary, Composed, EwmaEstimator, PartialRetarget,
+            AsymmetricCusumBoundary, Composed, EwmaEstimator, PartialRetarget,
         };
         Ok(VardiffState {
             inner: Box::new(Composed::new(
                 EwmaEstimator::new(120),
-                AdaptiveCusumBoundary::new(1.5, 0.05),
+                AsymmetricCusumBoundary::new(1.5, 0.05, 3.0),
                 PartialRetarget::new(0.5),
                 min_allowed_hashrate,
                 clock,

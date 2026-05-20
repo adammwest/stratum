@@ -37,8 +37,8 @@ pub mod estimator;
 pub mod update;
 
 pub use boundary::{
-    AdaptiveCusumBoundary, Boundary, CredibleIntervalBoundary, CusumBoundary, PoissonCI,
-    StepFunction,
+    AdaptiveCusumBoundary, AsymmetricCusumBoundary, Boundary, CredibleIntervalBoundary,
+    CusumBoundary, PoissonCI, StepFunction,
 };
 pub use composed::{classic_composed, ClassicComposed, Composed};
 pub use decision::DecisionRecord;

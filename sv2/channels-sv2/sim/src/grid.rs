@@ -555,6 +555,35 @@ impl AlgorithmSpec {
         })
     }
 
+    /// EWMA + AsymmetricCusumBoundary: requires more evidence to tighten
+    /// (costly: rejects in-flight shares) than to ease (free).
+    pub fn ewma_asymmetric_cusum(
+        tau_secs: u64,
+        base_sensitivity: f64,
+        floor: f64,
+        tighten_multiplier: f64,
+        eta: f32,
+    ) -> Self {
+        let name = format!(
+            "EWMA-AsymCUSUM-tau{}-s{}-f{}-t{}-eta{}",
+            tau_secs,
+            (base_sensitivity * 10.0).round() as u32,
+            (floor * 100.0).round() as u32,
+            (tighten_multiplier * 10.0).round() as u32,
+            (eta * 100.0).round() as u32,
+        );
+        Self::new(name, move |clock| {
+            let inner = composed::Composed::new(
+                composed::EwmaEstimator::new(tau_secs),
+                composed::AsymmetricCusumBoundary::new(base_sensitivity, floor, tighten_multiplier),
+                composed::PartialRetarget::new(eta),
+                1.0,
+                clock,
+            );
+            VardiffBox(Box::new(inner))
+        })
+    }
+
     /// Kalman estimator + PoissonCI boundary + PartialRetarget.
     /// The Kalman provides adaptive smoothing + native uncertainty.
     pub fn kalman_poisson(q: f64, eta: f32) -> Self {

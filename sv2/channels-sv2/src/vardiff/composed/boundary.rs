@@ -338,6 +338,78 @@ impl Boundary for AdaptiveCusumBoundary {
     }
 }
 
+/// Asymmetric rate-adaptive CUSUM: uses different thresholds for
+/// tightening (miner over-performing) vs easing (miner under-performing).
+///
+/// **Rationale:** Making difficulty harder costs ~1 rejected share per fire
+/// (in-flight work becomes invalid). Making difficulty easier costs nothing
+/// (old harder work is still valid). Therefore the boundary should:
+/// - Fire **quickly** to ease difficulty (miner slowing → detect fast, free action)
+/// - Fire **cautiously** to tighten difficulty (miner speeding → avoid rejecting in-flight shares)
+///
+/// Direction is determined from the snapshot: if `realized_share_per_min > shares_per_minute`,
+/// the miner is over-performing and firing would tighten (costly direction).
+///
+/// The `tighten_multiplier` (>1.0) makes the threshold higher when tightening,
+/// requiring more evidence before making difficulty harder.
+#[derive(Debug, Clone, Copy)]
+pub struct AsymmetricCusumBoundary {
+    /// Base sensitivity (same as AdaptiveCusumBoundary).
+    pub base_sensitivity: f64,
+    /// Reference SPM for rate scaling.
+    pub reference_spm: f64,
+    /// Minimum threshold floor.
+    pub floor: f64,
+    /// Multiplier applied to threshold when firing would TIGHTEN difficulty.
+    /// Values > 1.0 make tightening more conservative. Typical: 1.5–3.0.
+    pub tighten_multiplier: f64,
+    /// Tick interval.
+    pub tick_secs: u64,
+}
+
+impl AsymmetricCusumBoundary {
+    /// Constructs with default reference_spm=30 and tick_secs=60.
+    /// `tighten_multiplier` controls the asymmetry: 1.0 = symmetric,
+    /// 2.0 = requires 2× more evidence to tighten than to ease.
+    pub fn new(base_sensitivity: f64, floor: f64, tighten_multiplier: f64) -> Self {
+        Self {
+            base_sensitivity,
+            reference_spm: 30.0,
+            floor,
+            tighten_multiplier: tighten_multiplier.max(1.0),
+            tick_secs: 60,
+        }
+    }
+}
+
+impl Boundary for AsymmetricCusumBoundary {
+    fn threshold(&self, dt_secs: u64, shares_per_minute: f32, snap: &EstimatorSnapshot) -> f64 {
+        let n_ticks = (dt_secs as f64 / self.tick_secs as f64).max(1.0);
+
+        let spm_factor = ((shares_per_minute as f64) / self.reference_spm).sqrt();
+        let sensitivity = self.base_sensitivity * spm_factor;
+
+        let effective_floor = match &snap.uncertainty {
+            Some(u) if u.ratio_std > 0.0 => self.floor + u.ratio_std * 0.5,
+            _ => self.floor,
+        };
+
+        let base_threshold = (sensitivity / n_ticks) + effective_floor;
+
+        // Determine direction: is the miner over-performing (tighten) or under-performing (ease)?
+        // realized_spm > configured_spm means miner is faster → fire would tighten → costly
+        let would_tighten = snap.realized_share_per_min > shares_per_minute as f64;
+
+        let threshold_fraction = if would_tighten {
+            base_threshold * self.tighten_multiplier
+        } else {
+            base_threshold
+        };
+
+        threshold_fraction * 100.0
+    }
+}
+
 impl Boundary for CusumBoundary {
     fn threshold(&self, dt_secs: u64, _shares_per_minute: f32, snap: &EstimatorSnapshot) -> f64 {
         let n_ticks = (dt_secs as f64 / self.tick_secs as f64).max(1.0);

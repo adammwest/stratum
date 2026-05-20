@@ -30,10 +30,11 @@ fn main() -> std::io::Result<()> {
 
     let algorithms = vec![
         AlgorithmSpec::full_remedy(),
-        AlgorithmSpec::ewma_adaptive_cusum(120, 1.5, 0.05, 0.2),
-        AlgorithmSpec::ewma_adaptive_cusum(120, 1.5, 0.05, 0.3),
-        AlgorithmSpec::ewma_adaptive_cusum(120, 1.5, 0.05, 0.4),
         AlgorithmSpec::ewma_adaptive_cusum(120, 1.5, 0.05, 0.5),
+        // Asymmetric: cautious tighten, quick ease
+        AlgorithmSpec::ewma_asymmetric_cusum(120, 1.5, 0.05, 1.5, 0.5),
+        AlgorithmSpec::ewma_asymmetric_cusum(120, 1.5, 0.05, 2.0, 0.5),
+        AlgorithmSpec::ewma_asymmetric_cusum(120, 1.5, 0.05, 3.0, 0.5),
     ];
 
     let grid = Grid {
