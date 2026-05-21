@@ -213,7 +213,9 @@ fn build_report(
 
     // ---- Phase 1: Discount sweep ----
     out.push_str("## Phase 1: Discount factor sweep\n\n");
-    out.push_str("Fixed: prior_shares=0.5, eta=0.2, z=2.576. FullRemedy (EWMA τ=120s) for reference.\n\n");
+    out.push_str(
+        "Fixed: prior_shares=0.5, eta=0.2, z=2.576. FullRemedy (EWMA τ=120s) for reference.\n\n",
+    );
 
     // Decoupling score
     out.push_str("### Decoupling score (higher = better)\n\n");
@@ -238,10 +240,22 @@ fn build_report(
         out.push_str(&format!("| {} |", spm as u32));
         for &d in discounts {
             let name = bayes_name(d, 0.5, 0.2, 2.576);
-            let v = get_metric(results_phase1, &name, spm, "step_minus_50_at_15min", "reaction_rate");
+            let v = get_metric(
+                results_phase1,
+                &name,
+                spm,
+                "step_minus_50_at_15min",
+                "reaction_rate",
+            );
             out.push_str(&fmt_opt(v));
         }
-        let v = get_metric(results_phase1, "FullRemedy", spm, "step_minus_50_at_15min", "reaction_rate");
+        let v = get_metric(
+            results_phase1,
+            "FullRemedy",
+            spm,
+            "step_minus_50_at_15min",
+            "reaction_rate",
+        );
         out.push_str(&fmt_opt(v));
         out.push('\n');
     }
@@ -254,10 +268,22 @@ fn build_report(
         out.push_str(&format!("| {} |", spm as u32));
         for &d in discounts {
             let name = bayes_name(d, 0.5, 0.2, 2.576);
-            let v = get_metric(results_phase1, &name, spm, "stable_1ph", "jitter_mean_per_min");
+            let v = get_metric(
+                results_phase1,
+                &name,
+                spm,
+                "stable_1ph",
+                "jitter_mean_per_min",
+            );
             out.push_str(&fmt_opt(v));
         }
-        let v = get_metric(results_phase1, "FullRemedy", spm, "stable_1ph", "jitter_mean_per_min");
+        let v = get_metric(
+            results_phase1,
+            "FullRemedy",
+            spm,
+            "stable_1ph",
+            "jitter_mean_per_min",
+        );
         out.push_str(&fmt_opt(v));
         out.push('\n');
     }
@@ -270,10 +296,22 @@ fn build_report(
         out.push_str(&format!("| {} |", spm as u32));
         for &d in discounts {
             let name = bayes_name(d, 0.5, 0.2, 2.576);
-            let v = get_metric(results_phase1, &name, spm, "stable_1ph", "settled_accuracy_p50");
+            let v = get_metric(
+                results_phase1,
+                &name,
+                spm,
+                "stable_1ph",
+                "settled_accuracy_p50",
+            );
             out.push_str(&fmt_opt_pct(v));
         }
-        let v = get_metric(results_phase1, "FullRemedy", spm, "stable_1ph", "settled_accuracy_p50");
+        let v = get_metric(
+            results_phase1,
+            "FullRemedy",
+            spm,
+            "stable_1ph",
+            "settled_accuracy_p50",
+        );
         out.push_str(&fmt_opt_pct(v));
         out.push('\n');
     }
@@ -286,10 +324,22 @@ fn build_report(
         out.push_str(&format!("| {} |", spm as u32));
         for &d in discounts {
             let name = bayes_name(d, 0.5, 0.2, 2.576);
-            let v = get_metric(results_phase1, &name, spm, "cold_start_10gh_to_1ph", "convergence_rate");
+            let v = get_metric(
+                results_phase1,
+                &name,
+                spm,
+                "cold_start_10gh_to_1ph",
+                "convergence_rate",
+            );
             out.push_str(&fmt_opt_pct(v));
         }
-        let v = get_metric(results_phase1, "FullRemedy", spm, "cold_start_10gh_to_1ph", "convergence_rate");
+        let v = get_metric(
+            results_phase1,
+            "FullRemedy",
+            spm,
+            "cold_start_10gh_to_1ph",
+            "convergence_rate",
+        );
         out.push_str(&fmt_opt_pct(v));
         out.push('\n');
     }
@@ -302,10 +352,22 @@ fn build_report(
         out.push_str(&format!("| {} |", spm as u32));
         for &d in discounts {
             let name = bayes_name(d, 0.5, 0.2, 2.576);
-            let v = get_metric(results_phase1, &name, spm, "cold_start_10gh_to_1ph", "ramp_target_overshoot_p99");
+            let v = get_metric(
+                results_phase1,
+                &name,
+                spm,
+                "cold_start_10gh_to_1ph",
+                "ramp_target_overshoot_p99",
+            );
             out.push_str(&fmt_opt_pct(v));
         }
-        let v = get_metric(results_phase1, "FullRemedy", spm, "cold_start_10gh_to_1ph", "ramp_target_overshoot_p99");
+        let v = get_metric(
+            results_phase1,
+            "FullRemedy",
+            spm,
+            "cold_start_10gh_to_1ph",
+            "ramp_target_overshoot_p99",
+        );
         out.push_str(&fmt_opt_pct(v));
         out.push('\n');
     }
@@ -336,10 +398,22 @@ fn build_report(
         out.push_str(&format!("| {} |", spm as u32));
         for &p in priors {
             let name = bayes_name(0.95, p, 0.2, 2.576);
-            let v = get_metric(results_phase2, &name, spm, "step_minus_50_at_15min", "reaction_rate");
+            let v = get_metric(
+                results_phase2,
+                &name,
+                spm,
+                "step_minus_50_at_15min",
+                "reaction_rate",
+            );
             out.push_str(&fmt_opt(v));
         }
-        let v = get_metric(results_phase2, "FullRemedy", spm, "step_minus_50_at_15min", "reaction_rate");
+        let v = get_metric(
+            results_phase2,
+            "FullRemedy",
+            spm,
+            "step_minus_50_at_15min",
+            "reaction_rate",
+        );
         out.push_str(&fmt_opt(v));
         out.push('\n');
     }
@@ -388,10 +462,22 @@ fn build_report(
             out.push_str(&format!("| {} |", spm as u32));
             for &eta in etas {
                 let name = bayes_name(d, 0.5, eta, 2.576);
-                let v = get_metric(results_phase3, &name, spm, "step_minus_50_at_15min", "reaction_rate");
+                let v = get_metric(
+                    results_phase3,
+                    &name,
+                    spm,
+                    "step_minus_50_at_15min",
+                    "reaction_rate",
+                );
                 out.push_str(&fmt_opt(v));
             }
-            let v = get_metric(results_phase3, "FullRemedy", spm, "step_minus_50_at_15min", "reaction_rate");
+            let v = get_metric(
+                results_phase3,
+                "FullRemedy",
+                spm,
+                "step_minus_50_at_15min",
+                "reaction_rate",
+            );
             out.push_str(&fmt_opt(v));
             out.push('\n');
         }
@@ -411,11 +497,7 @@ fn bayes_name(discount: f64, prior: f64, eta: f32, z: f64) -> String {
     )
 }
 
-fn get_decoupling(
-    results: &HashMap<String, Vec<CellResult>>,
-    name: &str,
-    spm: f32,
-) -> Option<f64> {
+fn get_decoupling(results: &HashMap<String, Vec<CellResult>>, name: &str, spm: f32) -> Option<f64> {
     let cells = results.get(name)?;
     let scored = DecouplingScore.compute(cells);
     scored

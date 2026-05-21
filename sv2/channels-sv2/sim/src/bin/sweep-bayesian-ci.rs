@@ -75,13 +75,23 @@ fn main() -> std::io::Result<()> {
 
     let started = Instant::now();
     let results = grid.run_paired();
-    eprintln!("Sweep complete in {:.2}s\n", started.elapsed().as_secs_f64());
+    eprintln!(
+        "Sweep complete in {:.2}s\n",
+        started.elapsed().as_secs_f64()
+    );
 
     fs::create_dir_all(&out_dir)?;
     let out_path = out_dir.join("bayesian_ci_sweep.md");
 
     let report = build_report(
-        &discounts, &ci_zs, &etas, prior, &share_rates, &results, trial_count, base_seed,
+        &discounts,
+        &ci_zs,
+        &etas,
+        prior,
+        &share_rates,
+        &results,
+        trial_count,
+        base_seed,
     );
     fs::write(&out_path, &report)?;
     eprintln!("Wrote {}", out_path.display());
@@ -160,16 +170,38 @@ fn build_report(
         out.push_str("| --- | --- | --- | --- | --- | --- | --- |\n");
         for &spm in share_rates {
             let dc = get_decoupling(results, name, spm);
-            let rr = get_metric(results, name, spm, "step_minus_50_at_15min", "reaction_rate");
+            let rr = get_metric(
+                results,
+                name,
+                spm,
+                "step_minus_50_at_15min",
+                "reaction_rate",
+            );
             let jt = get_metric(results, name, spm, "stable_1ph", "jitter_mean_per_min");
-            let cv = get_metric(results, name, spm, "cold_start_10gh_to_1ph", "convergence_rate");
-            let ov = get_metric(results, name, spm, "cold_start_10gh_to_1ph", "ramp_target_overshoot_p99");
+            let cv = get_metric(
+                results,
+                name,
+                spm,
+                "cold_start_10gh_to_1ph",
+                "convergence_rate",
+            );
+            let ov = get_metric(
+                results,
+                name,
+                spm,
+                "cold_start_10gh_to_1ph",
+                "ramp_target_overshoot_p99",
+            );
             let sa = get_metric(results, name, spm, "stable_1ph", "settled_accuracy_p50");
             out.push_str(&format!(
                 "| {} | {} | {} | {} | {} | {} | {} |\n",
                 spm as u32,
-                fmt_opt3(dc), fmt_opt3(rr), fmt_opt3(jt),
-                fmt_pct(cv), fmt_pct(ov), fmt_pct(sa),
+                fmt_opt3(dc),
+                fmt_opt3(rr),
+                fmt_opt3(jt),
+                fmt_pct(cv),
+                fmt_pct(ov),
+                fmt_pct(sa),
             ));
         }
         out.push('\n');
@@ -181,16 +213,50 @@ fn build_report(
     out.push_str("| --- | --- | --- | --- | --- | --- | --- |\n");
     for &spm in share_rates {
         let dc = get_decoupling(results, "FullRemedy", spm);
-        let rr = get_metric(results, "FullRemedy", spm, "step_minus_50_at_15min", "reaction_rate");
-        let jt = get_metric(results, "FullRemedy", spm, "stable_1ph", "jitter_mean_per_min");
-        let cv = get_metric(results, "FullRemedy", spm, "cold_start_10gh_to_1ph", "convergence_rate");
-        let ov = get_metric(results, "FullRemedy", spm, "cold_start_10gh_to_1ph", "ramp_target_overshoot_p99");
-        let sa = get_metric(results, "FullRemedy", spm, "stable_1ph", "settled_accuracy_p50");
+        let rr = get_metric(
+            results,
+            "FullRemedy",
+            spm,
+            "step_minus_50_at_15min",
+            "reaction_rate",
+        );
+        let jt = get_metric(
+            results,
+            "FullRemedy",
+            spm,
+            "stable_1ph",
+            "jitter_mean_per_min",
+        );
+        let cv = get_metric(
+            results,
+            "FullRemedy",
+            spm,
+            "cold_start_10gh_to_1ph",
+            "convergence_rate",
+        );
+        let ov = get_metric(
+            results,
+            "FullRemedy",
+            spm,
+            "cold_start_10gh_to_1ph",
+            "ramp_target_overshoot_p99",
+        );
+        let sa = get_metric(
+            results,
+            "FullRemedy",
+            spm,
+            "stable_1ph",
+            "settled_accuracy_p50",
+        );
         out.push_str(&format!(
             "| {} | {} | {} | {} | {} | {} | {} |\n",
             spm as u32,
-            fmt_opt3(dc), fmt_opt3(rr), fmt_opt3(jt),
-            fmt_pct(cv), fmt_pct(ov), fmt_pct(sa),
+            fmt_opt3(dc),
+            fmt_opt3(rr),
+            fmt_opt3(jt),
+            fmt_pct(cv),
+            fmt_pct(ov),
+            fmt_pct(sa),
         ));
     }
     out.push('\n');
@@ -201,25 +267,45 @@ fn build_report(
 fn get_decoupling(results: &HashMap<String, Vec<CellResult>>, name: &str, spm: f32) -> Option<f64> {
     let cells = results.get(name)?;
     let scored = DecouplingScore.compute(cells);
-    scored.iter().find(|(s, _)| *s == spm).and_then(|(_, mv)| mv.get("score"))
+    scored
+        .iter()
+        .find(|(s, _)| *s == spm)
+        .and_then(|(_, mv)| mv.get("score"))
 }
 
-fn get_metric(results: &HashMap<String, Vec<CellResult>>, name: &str, spm: f32, scenario: &str, key: &str) -> Option<f64> {
-    results.get(name)?.iter()
+fn get_metric(
+    results: &HashMap<String, Vec<CellResult>>,
+    name: &str,
+    spm: f32,
+    scenario: &str,
+    key: &str,
+) -> Option<f64> {
+    results
+        .get(name)?
+        .iter()
         .find(|c| c.shares_per_minute == spm && c.scenario_key() == scenario)
         .and_then(|c| c.get(key))
 }
 
 fn fmt_opt3(v: Option<f64>) -> String {
-    match v { Some(x) => format!("{:.3}", x), None => "—".to_string() }
+    match v {
+        Some(x) => format!("{:.3}", x),
+        None => "—".to_string(),
+    }
 }
 
 fn fmt_pct(v: Option<f64>) -> String {
-    match v { Some(x) => format!("{:.1}%", x * 100.0), None => "—".to_string() }
+    match v {
+        Some(x) => format!("{:.1}%", x * 100.0),
+        None => "—".to_string(),
+    }
 }
 
 fn env_or<T: std::str::FromStr>(var: &str, default: T) -> T {
-    env::var(var).ok().and_then(|s| s.parse().ok()).unwrap_or(default)
+    env::var(var)
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(default)
 }
 
 fn env_or_seed(var: &str, default: u64) -> u64 {

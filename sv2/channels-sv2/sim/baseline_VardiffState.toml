@@ -134,6 +134,19 @@ jitter_p99_per_min = 0.2
 jitter_p99_per_min_ci_low = 0.19047619047619047
 jitter_p99_per_min_ci_high = 0.2
 jitter_mean_per_min = 0.10753098154155225
+upward_step_magnitude_p50 = 1.2467556936980835
+upward_step_magnitude_p50_ci_low = 1.2402571621903675
+upward_step_magnitude_p50_ci_high = 1.2521148927621308
+upward_step_magnitude_p90 = 1.3517452142612234
+upward_step_magnitude_p90_ci_low = 1.3422428865095044
+upward_step_magnitude_p90_ci_high = 1.362891708887488
+upward_step_magnitude_p95 = 1.3838716332777352
+upward_step_magnitude_p95_ci_low = 1.3698284435582095
+upward_step_magnitude_p95_ci_high = 1.3921099881782713
+upward_step_magnitude_p99 = 1.4391452940477276
+upward_step_magnitude_p99_ci_low = 1.425948199036049
+upward_step_magnitude_p99_ci_high = 1.4502939540266528
+upward_step_magnitude_mean = 1.2338580299871929
 
 [cell.spm_6.step_minus_50_at_15min]
 shares_per_minute = 6
@@ -841,6 +854,19 @@ jitter_p99_per_min = 0.17647058823529413
 jitter_p99_per_min_ci_low = 0.16666666666666666
 jitter_p99_per_min_ci_high = 0.1875
 jitter_mean_per_min = 0.08355096444104856
+upward_step_magnitude_p50 = 1.20293952848699
+upward_step_magnitude_p50_ci_low = 1.1969444091514592
+upward_step_magnitude_p50_ci_high = 1.2096345778858244
+upward_step_magnitude_p90 = 1.3093129252469338
+upward_step_magnitude_p90_ci_low = 1.3003175564124538
+upward_step_magnitude_p90_ci_high = 1.3182037584949864
+upward_step_magnitude_p95 = 1.3415411325874897
+upward_step_magnitude_p95_ci_low = 1.3270569111584454
+upward_step_magnitude_p95_ci_high = 1.3539903882262838
+upward_step_magnitude_p99 = 1.3902372787251793
+upward_step_magnitude_p99_ci_low = 1.3774824508547394
+upward_step_magnitude_p99_ci_high = 1.4345026138605683
+upward_step_magnitude_mean = 1.1744087556633211
 
 [cell.spm_8.step_minus_50_at_15min]
 shares_per_minute = 8
@@ -1548,6 +1574,19 @@ jitter_p99_per_min = 0.15384615384615385
 jitter_p99_per_min_ci_low = 0.14285714285714285
 jitter_p99_per_min_ci_high = 0.16666666666666666
 jitter_mean_per_min = 0.06304069007287351
+upward_step_magnitude_p50 = 1.1595073196354848
+upward_step_magnitude_p50_ci_low = 1.1357642535370231
+upward_step_magnitude_p50_ci_high = 1.1706188825398989
+upward_step_magnitude_p90 = 1.2662874722236797
+upward_step_magnitude_p90_ci_low = 1.257793909598575
+upward_step_magnitude_p90_ci_high = 1.2760119265970837
+upward_step_magnitude_p95 = 1.2982672485811424
+upward_step_magnitude_p95_ci_low = 1.2889276321903091
+upward_step_magnitude_p95_ci_high = 1.3073979222468572
+upward_step_magnitude_p99 = 1.359379684106251
+upward_step_magnitude_p99_ci_low = 1.3424599328254698
+upward_step_magnitude_p99_ci_high = 1.375978956874678
+upward_step_magnitude_mean = 1.1211031712322617
 
 [cell.spm_10.step_minus_50_at_15min]
 shares_per_minute = 10
@@ -2255,6 +2294,19 @@ jitter_p99_per_min = 0.13636363636363635
 jitter_p99_per_min_ci_low = 0.125
 jitter_p99_per_min_ci_high = 0.15384615384615385
 jitter_mean_per_min = 0.04471574628591346
+upward_step_magnitude_p50 = 1
+upward_step_magnitude_p50_ci_low = 1
+upward_step_magnitude_p50_ci_high = 1
+upward_step_magnitude_p90 = 1.2300933038141524
+upward_step_magnitude_p90_ci_low = 1.220492193260926
+upward_step_magnitude_p90_ci_high = 1.2415229327404482
+upward_step_magnitude_p95 = 1.258331807541949
+upward_step_magnitude_p95_ci_low = 1.2500187065960833
+upward_step_magnitude_p95_ci_high = 1.2689823503136095
+upward_step_magnitude_p99 = 1.3183332946147877
+upward_step_magnitude_p99_ci_low = 1.3009329664957237
+upward_step_magnitude_p99_ci_high = 1.3278996654261346
+upward_step_magnitude_mean = 1.0767775500384063
 
 [cell.spm_12.step_minus_50_at_15min]
 shares_per_minute = 12
@@ -2962,6 +3014,19 @@ jitter_p99_per_min = 0.10526315789473684
 jitter_p99_per_min_ci_low = 0.1
 jitter_p99_per_min_ci_high = 0.125
 jitter_mean_per_min = 0.026367439354985357
+upward_step_magnitude_p50 = 1
+upward_step_magnitude_p50_ci_low = 1
+upward_step_magnitude_p50_ci_high = 1
+upward_step_magnitude_p90 = 1.1937555414199454
+upward_step_magnitude_p90_ci_low = 1.185332839296276
+upward_step_magnitude_p90_ci_high = 1.2069885644065619
+upward_step_magnitude_p95 = 1.2231808472888717
+upward_step_magnitude_p95_ci_low = 1.2144362442631147
+upward_step_magnitude_p95_ci_high = 1.228831095778376
+upward_step_magnitude_p99 = 1.2655062246492068
+upward_step_magnitude_p99_ci_low = 1.2427819830579765
+upward_step_magnitude_p99_ci_high = 1.2785827035144224
+upward_step_magnitude_mean = 1.0375910209691626
 
 [cell.spm_15.step_minus_50_at_15min]
 shares_per_minute = 15
@@ -3669,6 +3734,19 @@ jitter_p99_per_min = 0.08333333333333333
 jitter_p99_per_min_ci_low = 0.07692307692307693
 jitter_p99_per_min_ci_high = 0.1
 jitter_mean_per_min = 0.007836333480509237
+upward_step_magnitude_p50 = 1
+upward_step_magnitude_p50_ci_low = 1
+upward_step_magnitude_p50_ci_high = 1
+upward_step_magnitude_p90 = 1
+upward_step_magnitude_p90_ci_low = 1
+upward_step_magnitude_p90_ci_high = 1
+upward_step_magnitude_p95 = 1.1665067498846897
+upward_step_magnitude_p95_ci_low = 1
+upward_step_magnitude_p95_ci_high = 1.1778802582494738
+upward_step_magnitude_p99 = 1.2295577505672208
+upward_step_magnitude_p99_ci_low = 1.209548644258607
+upward_step_magnitude_p99_ci_high = 1.2372564519632647
+upward_step_magnitude_mean = 1.0114004614638739
 
 [cell.spm_20.step_minus_50_at_15min]
 shares_per_minute = 20
@@ -4376,6 +4454,19 @@ jitter_p99_per_min = 0.06666666666666667
 jitter_p99_per_min_ci_low = 0.05555555555555555
 jitter_p99_per_min_ci_high = 0.08333333333333333
 jitter_mean_per_min = 0.0020562938603553597
+upward_step_magnitude_p50 = 1
+upward_step_magnitude_p50_ci_low = 1
+upward_step_magnitude_p50_ci_high = 1
+upward_step_magnitude_p90 = 1
+upward_step_magnitude_p90_ci_low = 1
+upward_step_magnitude_p90_ci_high = 1
+upward_step_magnitude_p95 = 1
+upward_step_magnitude_p95_ci_low = 1
+upward_step_magnitude_p95_ci_high = 1
+upward_step_magnitude_p99 = 1.1727815034009765
+upward_step_magnitude_p99_ci_low = 1
+upward_step_magnitude_p99_ci_high = 1.1919896264188605
+upward_step_magnitude_mean = 1.0033163758740948
 
 [cell.spm_25.step_minus_50_at_15min]
 shares_per_minute = 25
@@ -5083,6 +5174,19 @@ jitter_p99_per_min = 0
 jitter_p99_per_min_ci_low = 0
 jitter_p99_per_min_ci_high = 0.06666666666666667
 jitter_mean_per_min = 0.0005672902022123907
+upward_step_magnitude_p50 = 1
+upward_step_magnitude_p50_ci_low = 1
+upward_step_magnitude_p50_ci_high = 1
+upward_step_magnitude_p90 = 1
+upward_step_magnitude_p90_ci_low = 1
+upward_step_magnitude_p90_ci_high = 1
+upward_step_magnitude_p95 = 1
+upward_step_magnitude_p95_ci_low = 1
+upward_step_magnitude_p95_ci_high = 1
+upward_step_magnitude_p99 = 1
+upward_step_magnitude_p99_ci_low = 1
+upward_step_magnitude_p99_ci_high = 1
+upward_step_magnitude_mean = 1.0002138523046944
 
 [cell.spm_30.step_minus_50_at_15min]
 shares_per_minute = 30
@@ -5669,67 +5773,75 @@ step_correction_mean = 0.4651413485973696
 step_correction_p50 = 0.45474642515182495
 
 [derived.operational_fitness.spm_6]
-score = 0.7007268168069276
+score = 0.7407268168069275
 reaction_10_component = 0.647
 reaction_50_component = 0.984
 jitter_component = 0.6415633948614925
 convergence_component = 0.6
+asymmetry_preference_component = 1
 overshoot_component = 0.6386413783462912
 
 [derived.operational_fitness.spm_8]
-score = 0.6809583540899334
+score = 0.7309583540899335
 reaction_10_component = 0.563
 reaction_50_component = 0.987
 jitter_component = 0.7214967851965048
 convergence_component = 0.5
+asymmetry_preference_component = 1
 overshoot_component = 0.735089970506325
 
 [derived.operational_fitness.spm_10]
-score = 0.6816047944484778
+score = 0.7316047944484777
 reaction_10_component = 0.476
 reaction_50_component = 0.99
 jitter_component = 0.789864366423755
 convergence_component = 0.5
+asymmetry_preference_component = 1
 overshoot_component = 0.8163192116372677
 
 [derived.operational_fitness.spm_12]
-score = 0.712341487059675
+score = 0.7523414870596751
 reaction_10_component = 0.443
 reaction_50_component = 0.99
 jitter_component = 0.8509475123802884
 convergence_component = 0.6
+asymmetry_preference_component = 1
 overshoot_component = 0.8340198458361734
 
 [derived.operational_fitness.spm_15]
-score = 0.7998844126939115
+score = 0.8098844126939115
 reaction_10_component = 0.428
 reaction_50_component = 0.998
 jitter_component = 0.9121085354833821
 convergence_component = 0.9
+asymmetry_preference_component = 1
 overshoot_component = 0.8586270559723501
 
 [derived.operational_fitness.spm_20]
-score = 0.8312956441719426
+score = 0.8412956441719426
 reaction_10_component = 0.474
 reaction_50_component = 0.994
 jitter_component = 0.9738788883983025
 convergence_component = 0.9
+asymmetry_preference_component = 1
 overshoot_component = 0.9421986649228205
 
 [derived.operational_fitness.spm_25]
-score = 0.8479448470647593
+score = 0.8579448470647593
 reaction_10_component = 0.523
 reaction_50_component = 0.997
 jitter_component = 0.9931456871321488
 convergence_component = 0.9
+asymmetry_preference_component = 1
 overshoot_component = 0.9416570963832953
 
 [derived.operational_fitness.spm_30]
-score = 0.8488213099262585
+score = 0.8588213099262585
 reaction_10_component = 0.5
 reaction_50_component = 0.996
 jitter_component = 0.9981090326592921
 convergence_component = 0.9
+asymmetry_preference_component = 1
 overshoot_component = 0.9999950339439994
 
 [derived.decoupling_score.spm_6]

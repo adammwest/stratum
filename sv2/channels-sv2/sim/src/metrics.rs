@@ -572,6 +572,7 @@ pub fn registry() -> Vec<Box<dyn Metric>> {
             settle_after_secs: INTROSPECTION_SETTLE_AFTER_SECS,
         }),
         Box::new(RampTargetOvershoot),
+        Box::new(UpwardStepMagnitude),
         Box::new(FireDecisiveness {
             settle_after_secs: 0,
         }),
@@ -1647,6 +1648,129 @@ impl Metric for RampTargetOvershoot {
 }
 
 // ============================================================================
+// Upward step magnitude — per-trial distribution metric
+// ============================================================================
+
+/// Per-trial metric measuring how aggressively vardiff raises difficulty
+/// during steady-state operation.
+///
+/// For each trial in the `Stable` scenario, all upward difficulty
+/// adjustments (fires where `new_hashrate > current_hashrate_before`)
+/// are identified and the ratio `new_hashrate / current_hashrate_before`
+/// is recorded. The per-trial value is the maximum upward ratio observed
+/// in that trial (or 1.0 if no upward fires occurred). The distribution
+/// across trials is then summarized as p50/p90/p95/p99.
+///
+/// The p95 value is the headline metric: it captures how large the
+/// 95th-percentile worst-case upward jump is under stable load. Lower
+/// values indicate gentler retargeting.
+#[derive(Debug, Clone, Default)]
+pub struct UpwardStepMagnitude;
+
+impl Metric for UpwardStepMagnitude {
+    fn id(&self) -> &'static str {
+        "upward_step_magnitude"
+    }
+    fn category(&self) -> MetricCategory {
+        MetricCategory::Behavioral
+    }
+    fn class(&self) -> MetricClass {
+        MetricClass::ShouldHave
+    }
+    fn applies_to(&self, cell: &Cell) -> bool {
+        matches!(cell.scenario, Scenario::Stable)
+    }
+    fn compute(&self, trials: &[Trial], _cell: &Cell) -> MetricValues {
+        let mut per_trial: Vec<f64> = Vec::with_capacity(trials.len());
+        for trial in trials {
+            // Collect all upward step ratios in this trial.
+            let mut ratios: Vec<f64> = Vec::new();
+            for tick in &trial.ticks {
+                if tick.fired {
+                    if let Some(new_h) = tick.new_hashrate {
+                        let old_h = tick.current_hashrate_before;
+                        if new_h > old_h && old_h > 0.0 {
+                            ratios.push(new_h as f64 / old_h as f64);
+                        }
+                    }
+                }
+            }
+            // Per-trial value: p95 of upward ratios in this trial, or
+            // 1.0 (no change) if no upward fires occurred.
+            if ratios.is_empty() {
+                per_trial.push(1.0);
+            } else {
+                ratios.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                let idx = ((0.95_f64) * (ratios.len() as f64 - 1.0)).round() as usize;
+                per_trial.push(ratios[idx.min(ratios.len() - 1)]);
+            }
+        }
+        let dist = Distribution::new(per_trial);
+        let mut v = MetricValues::new();
+        dist.record_percentile(&mut v, "upward_step_magnitude_p50", 50.0);
+        dist.record_percentile(&mut v, "upward_step_magnitude_p90", 90.0);
+        dist.record_percentile(&mut v, "upward_step_magnitude_p95", 95.0);
+        dist.record_percentile(&mut v, "upward_step_magnitude_p99", 99.0);
+        v.set("upward_step_magnitude_mean", dist.mean());
+        v
+    }
+    fn tolerance_checks(&self, _cell: &Cell) -> Vec<ToleranceCheck> {
+        vec![ToleranceCheck {
+            key: "upward_step_magnitude_p95",
+            tolerance: Tolerance::WithinCi {
+                direction: Direction::LowerIsBetter,
+                extra_abs: 0.05,
+                extra_mul: Some(0.20),
+            },
+        }]
+    }
+    fn summary_specs(&self) -> Vec<SummarySpec> {
+        vec![SummarySpec {
+            label: "upward step magnitude p95 (stable)",
+            key: "upward_step_magnitude_p95",
+            direction: Direction::LowerIsBetter,
+            scenario_filter: ScenarioFilter::Stable,
+            fmt: SummaryFmt::Float3,
+        }]
+    }
+    fn render_markdown(&self, results: &[crate::baseline::CellResult], w: &mut String) {
+        use crate::baseline::{find_cell, fmt_f, unique_rates};
+        let has_any = results
+            .iter()
+            .any(|r| r.get("upward_step_magnitude_p95").is_some());
+        if !has_any {
+            return;
+        }
+        w.push_str("## Upward step magnitude (stable load)\n\n");
+        w.push_str(
+            "`new_hashrate / old_hashrate` for upward difficulty adjustments \
+             during steady-state. Per-trial p95 of ratios, then distribution \
+             across trials. Values near 1.0 indicate gentle retargeting; \
+             values >> 1.0 indicate aggressive jumps.\n\n",
+        );
+        w.push_str("| share/min | p50 | p90 | p95 | p99 | mean |\n");
+        w.push_str("| --- | --- | --- | --- | --- | --- |\n");
+        for spm in unique_rates(results) {
+            if let Some(r) = find_cell(results, spm, "stable_1ph") {
+                if !r.metrics.contains_key("upward_step_magnitude") {
+                    continue;
+                }
+                w.push_str(&format!(
+                    "| {} | {} | {} | {} | {} | {} |\n",
+                    spm,
+                    fmt_f(r.get("upward_step_magnitude_p50")),
+                    fmt_f(r.get("upward_step_magnitude_p90")),
+                    fmt_f(r.get("upward_step_magnitude_p95")),
+                    fmt_f(r.get("upward_step_magnitude_p99")),
+                    fmt_f(r.get("upward_step_magnitude_mean")),
+                ));
+            }
+        }
+        w.push('\n');
+    }
+}
+
+// ============================================================================
 // Bootstrap CI helper
 // ============================================================================
 
@@ -1823,7 +1947,6 @@ impl Metric for StepCorrection {
         vec![]
     }
 }
-
 
 // ============================================================================
 // Derived-metric constants
@@ -2031,9 +2154,22 @@ impl DerivedMetric for DecouplingScore {
 /// fitness = 0.25 × reaction_rate(Step −10%)
 ///         + 0.20 × reaction_rate(Step −50%)
 ///         + 0.20 × clamp(1 − jitter_mean / 0.30, 0, 1)
-///         + 0.25 × convergence_rate × clamp(1 − conv_p50 / 600s, 0, 1)
+///         + 0.15 × convergence_rate × clamp(1 − conv_p50 / 600s, 0, 1)
+///         + 0.10 × asymmetry_preference
 ///         + 0.10 × clamp(1 − overshoot_p99, 0, 1)
 /// ```
+///
+/// The `asymmetry_preference` term is computed as:
+///
+/// ```text
+/// clamp(reaction_rate(Step −10%) / reaction_rate(Step +10%), 0, 1)
+/// ```
+///
+/// This rewards algorithms that detect hashrate drops faster than
+/// spikes — operationally more valuable because drops indicate
+/// failing hardware or disconnections that require prompt difficulty
+/// adjustment, while upward spikes are benign (miner simply earns
+/// fewer shares until the next retarget).
 ///
 /// Convergence is now both pass/fail (rate) AND speed (p50 time).
 /// A 60s convergence scores 1.0; 600s (10 min) scores 0.0.
@@ -2041,14 +2177,15 @@ impl DerivedMetric for DecouplingScore {
 /// eventually get there.
 ///
 /// Higher is better. Weights reflect operational priorities:
-/// - Small-change detection (30%): the primary value — detecting 10%
+/// - Small-change detection (25%): the primary value — detecting 10%
 ///   hashrate declines (failing ASICs, thermal throttling) within
 ///   minutes is worth more than detecting catastrophic drops.
 /// - Large-change detection (20%): still important for disconnects.
 /// - Jitter control (20%): tighter tolerance (0.10 fires/min ceiling
 ///   vs the old 0.50). Excessive jitter destabilizes share submission
 ///   rate and confuses monitoring.
-/// - Convergence (20%): new miners must reach correct difficulty fast.
+/// - Convergence (15%): new miners must reach correct difficulty fast.
+/// - Asymmetry preference (10%): prefer down-detection over up-detection.
 /// - Overshoot safety (10%): cold-start ramp shouldn't overshoot truth.
 #[derive(Debug, Clone, Default)]
 pub struct OperationalFitness;
@@ -2066,6 +2203,7 @@ impl DerivedMetric for OperationalFitness {
         #[derive(Default, Clone)]
         struct Inputs {
             reaction_10: Option<f64>,
+            reaction_plus_10: Option<f64>,
             reaction_50: Option<f64>,
             jitter_mean: Option<f64>,
             convergence_rate: Option<f64>,
@@ -2085,6 +2223,11 @@ impl DerivedMetric for OperationalFitness {
                 Scenario::Step { delta_pct: -10 } => {
                     if let Some(rate) = r.get("reaction_rate") {
                         entry.reaction_10 = Some(rate);
+                    }
+                }
+                Scenario::Step { delta_pct: 10 } => {
+                    if let Some(rate) = r.get("reaction_rate") {
+                        entry.reaction_plus_10 = Some(rate);
                     }
                 }
                 Scenario::Step { delta_pct: -50 } => {
@@ -2118,6 +2261,7 @@ impl DerivedMetric for OperationalFitness {
             .into_iter()
             .filter_map(|(spm, inp)| {
                 let r10 = inp.reaction_10.unwrap_or(0.0);
+                let r_plus_10 = inp.reaction_plus_10.unwrap_or(0.0);
                 let r50 = inp.reaction_50.unwrap_or(0.0);
                 let jitter = inp.jitter_mean.unwrap_or(1.0);
                 let conv_rate = inp.convergence_rate.unwrap_or(0.0);
@@ -2131,11 +2275,24 @@ impl DerivedMetric for OperationalFitness {
                 // Speed: 60s → 1.0, 600s → 0.0, linear between.
                 let speed_factor = (1.0 - conv_secs / CONV_CEILING_SECS).clamp(0.0, 1.0);
                 let convergence_factor = conv_rate * speed_factor;
+                // Asymmetry preference: rewards algorithms that detect drops faster
+                // than spikes. ratio > 1 means down-detection is faster (good);
+                // clamped to [0, 1] so it saturates at parity.
+                let asymmetry_preference = if r_plus_10 > 0.0 {
+                    (r10 / r_plus_10).clamp(0.0, 1.0)
+                } else if r10 > 0.0 {
+                    // Down-detection fires but up-detection doesn't → perfect
+                    1.0
+                } else {
+                    // Neither fires → no preference observable
+                    0.0
+                };
 
                 let score = 0.25 * r10
                     + 0.20 * r50
                     + 0.20 * jitter_factor
-                    + 0.25 * convergence_factor
+                    + 0.15 * convergence_factor
+                    + 0.10 * asymmetry_preference
                     + 0.10 * overshoot_factor;
 
                 let mut mv = MetricValues::new();
@@ -2144,6 +2301,7 @@ impl DerivedMetric for OperationalFitness {
                 mv.set("reaction_50_component", Some(r50));
                 mv.set("jitter_component", Some(jitter_factor));
                 mv.set("convergence_component", Some(convergence_factor));
+                mv.set("asymmetry_preference_component", Some(asymmetry_preference));
                 mv.set("overshoot_component", Some(overshoot_factor));
                 Some((spm as f32, mv))
             })
@@ -2179,23 +2337,26 @@ impl DerivedMetric for OperationalFitness {
         w.push_str("## Operational fitness (per share rate)\n\n");
         w.push_str(
             "`0.25×react(-10%) + 0.2×react(-50%) + 0.2×(1-jitter/0.3) + \
-             0.25×(conv_rate×conv_speed) + 0.1×(1-overshoot)`. Higher is better.\n\n",
+             0.15×(conv_rate×conv_speed) + 0.1×asymmetry_pref + 0.1×(1-overshoot)`. Higher is better.\n\n",
         );
-        w.push_str("| share/min | fitness | react-10% | react-50% | jitter | conv | overshoot |\n");
-        w.push_str("| --- | --- | --- | --- | --- | --- | --- |\n");
+        w.push_str(
+            "| share/min | fitness | react-10% | react-50% | jitter | conv | asym | overshoot |\n",
+        );
+        w.push_str("| --- | --- | --- | --- | --- | --- | --- | --- |\n");
         for (spm, mv) in scores {
             let s = |k: &str| match mv.get(k) {
                 Some(v) => format!("{:.3}", v),
                 None => "—".to_string(),
             };
             w.push_str(&format!(
-                "| {} | {} | {} | {} | {} | {} | {} |\n",
+                "| {} | {} | {} | {} | {} | {} | {} | {} |\n",
                 spm as u32,
                 s("score"),
                 s("reaction_10_component"),
                 s("reaction_50_component"),
                 s("jitter_component"),
                 s("convergence_component"),
+                s("asymmetry_preference_component"),
                 s("overshoot_component"),
             ));
         }
@@ -2836,6 +2997,7 @@ mod tests {
                 "bias",
                 "variance",
                 "ramp_target_overshoot",
+                "upward_step_magnitude",
                 "fire_decisiveness",
                 "step_correction",
             ]
@@ -2848,7 +3010,11 @@ mod tests {
         let ids: Vec<&str> = r.iter().map(|m| m.id()).collect();
         assert_eq!(
             ids,
-            vec!["operational_fitness", "decoupling_score", "reaction_asymmetry"]
+            vec![
+                "operational_fitness",
+                "decoupling_score",
+                "reaction_asymmetry"
+            ]
         );
     }
 

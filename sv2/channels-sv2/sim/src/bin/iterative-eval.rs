@@ -74,7 +74,11 @@ struct MetricSpec {
 }
 
 #[derive(Clone, Copy)]
-enum Fmt { Frac3, Pct1, Secs }
+enum Fmt {
+    Frac3,
+    Pct1,
+    Secs,
+}
 
 fn format_val(v: f64, fmt: Fmt) -> String {
     match fmt {
@@ -83,7 +87,11 @@ fn format_val(v: f64, fmt: Fmt) -> String {
         Fmt::Secs => {
             let mins = v as u64 / 60;
             let secs = v as u64 % 60;
-            if secs == 0 { format!("{}m", mins) } else { format!("{}m{:02}s", mins, secs) }
+            if secs == 0 {
+                format!("{}m", mins)
+            } else {
+                format!("{}m{:02}s", mins, secs)
+            }
         }
     }
 }
@@ -94,16 +102,23 @@ fn build_report(
     trial_count: usize,
 ) -> String {
     // Compute average fitness across all SPM to rank algorithms
-    let mut algo_fitness: Vec<(String, f64)> = results.keys().map(|name| {
-        let cells = &results[name];
-        let scores = OperationalFitness.compute(cells);
-        let avg: f64 = if scores.is_empty() {
-            0.0
-        } else {
-            scores.iter().filter_map(|(_, mv)| mv.get("score")).sum::<f64>() / scores.len() as f64
-        };
-        (name.clone(), avg)
-    }).collect();
+    let mut algo_fitness: Vec<(String, f64)> = results
+        .keys()
+        .map(|name| {
+            let cells = &results[name];
+            let scores = OperationalFitness.compute(cells);
+            let avg: f64 = if scores.is_empty() {
+                0.0
+            } else {
+                scores
+                    .iter()
+                    .filter_map(|(_, mv)| mv.get("score"))
+                    .sum::<f64>()
+                    / scores.len() as f64
+            };
+            (name.clone(), avg)
+        })
+        .collect();
     algo_fitness.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
 
     let sorted_names: Vec<&str> = algo_fitness.iter().map(|(n, _)| n.as_str()).collect();
@@ -124,23 +139,75 @@ fn build_report(
     out.push_str("| --- | --- | --- |\n");
     for (i, (name, score)) in algo_fitness.iter().enumerate() {
         let marker = if i == 0 { " ★" } else { "" };
-        out.push_str(&format!("| {} | {}{} | {:.3} |\n", i + 1, name, marker, score));
+        out.push_str(&format!(
+            "| {} | {}{} | {:.3} |\n",
+            i + 1,
+            name,
+            marker,
+            score
+        ));
     }
     out.push('\n');
 
     // Metric tables
     let metrics = vec![
-        MetricSpec { title: "Reaction rate at -10% step", higher_is_better: true, scenario: "step_minus_10_at_15min", key: "reaction_rate", fmt: Fmt::Pct1 },
-        MetricSpec { title: "Reaction rate at -50% step", higher_is_better: true, scenario: "step_minus_50_at_15min", key: "reaction_rate", fmt: Fmt::Pct1 },
-        MetricSpec { title: "Cold-start convergence time p50", higher_is_better: false, scenario: "cold_start_10gh_to_1ph", key: "convergence_p50_secs", fmt: Fmt::Secs },
-        MetricSpec { title: "Cold-start convergence rate", higher_is_better: true, scenario: "cold_start_10gh_to_1ph", key: "convergence_rate", fmt: Fmt::Pct1 },
-        MetricSpec { title: "Stable-load jitter (fires/min)", higher_is_better: false, scenario: "stable_1ph", key: "jitter_mean_per_min", fmt: Fmt::Frac3 },
-        MetricSpec { title: "Ramp target overshoot p99", higher_is_better: false, scenario: "cold_start_10gh_to_1ph", key: "ramp_target_overshoot_p99", fmt: Fmt::Pct1 },
-        MetricSpec { title: "Settled accuracy p50", higher_is_better: false, scenario: "stable_1ph", key: "settled_accuracy_p50", fmt: Fmt::Pct1 },
+        MetricSpec {
+            title: "Reaction rate at -10% step",
+            higher_is_better: true,
+            scenario: "step_minus_10_at_15min",
+            key: "reaction_rate",
+            fmt: Fmt::Pct1,
+        },
+        MetricSpec {
+            title: "Reaction rate at -50% step",
+            higher_is_better: true,
+            scenario: "step_minus_50_at_15min",
+            key: "reaction_rate",
+            fmt: Fmt::Pct1,
+        },
+        MetricSpec {
+            title: "Cold-start convergence time p50",
+            higher_is_better: false,
+            scenario: "cold_start_10gh_to_1ph",
+            key: "convergence_p50_secs",
+            fmt: Fmt::Secs,
+        },
+        MetricSpec {
+            title: "Cold-start convergence rate",
+            higher_is_better: true,
+            scenario: "cold_start_10gh_to_1ph",
+            key: "convergence_rate",
+            fmt: Fmt::Pct1,
+        },
+        MetricSpec {
+            title: "Stable-load jitter (fires/min)",
+            higher_is_better: false,
+            scenario: "stable_1ph",
+            key: "jitter_mean_per_min",
+            fmt: Fmt::Frac3,
+        },
+        MetricSpec {
+            title: "Ramp target overshoot p99",
+            higher_is_better: false,
+            scenario: "cold_start_10gh_to_1ph",
+            key: "ramp_target_overshoot_p99",
+            fmt: Fmt::Pct1,
+        },
+        MetricSpec {
+            title: "Settled accuracy p50",
+            higher_is_better: false,
+            scenario: "stable_1ph",
+            key: "settled_accuracy_p50",
+            fmt: Fmt::Pct1,
+        },
     ];
 
     for spec in &metrics {
-        let dir = if spec.higher_is_better { "higher = better" } else { "lower = better" };
+        let dir = if spec.higher_is_better {
+            "higher = better"
+        } else {
+            "lower = better"
+        };
         out.push_str(&format!("## {} ({})\n\n", spec.title, dir));
 
         // Header
@@ -149,7 +216,9 @@ fn build_report(
             out.push_str(&format!(" {} |", name));
         }
         out.push_str("\n| --- |");
-        for _ in &sorted_names { out.push_str(" --- |"); }
+        for _ in &sorted_names {
+            out.push_str(" --- |");
+        }
         out.push('\n');
 
         // Rows
@@ -157,14 +226,21 @@ fn build_report(
             out.push_str(&format!("| {} |", spm as u32));
 
             // Collect values for this row to find the winner
-            let values: Vec<Option<f64>> = sorted_names.iter().map(|name| {
-                get_metric(results, name, spm, spec.scenario, spec.key)
-            }).collect();
+            let values: Vec<Option<f64>> = sorted_names
+                .iter()
+                .map(|name| get_metric(results, name, spm, spec.scenario, spec.key))
+                .collect();
 
             let best = if spec.higher_is_better {
-                values.iter().filter_map(|v| *v).fold(f64::NEG_INFINITY, f64::max)
+                values
+                    .iter()
+                    .filter_map(|v| *v)
+                    .fold(f64::NEG_INFINITY, f64::max)
             } else {
-                values.iter().filter_map(|v| *v).filter(|v| *v > 0.0 || spec.key == "jitter_mean_per_min")
+                values
+                    .iter()
+                    .filter_map(|v| *v)
+                    .filter(|v| *v > 0.0 || spec.key == "jitter_mean_per_min")
                     .fold(f64::INFINITY, f64::min)
             };
 
@@ -199,13 +275,18 @@ fn get_metric(
     scenario_key: &str,
     metric_key: &str,
 ) -> Option<f64> {
-    results.get(name)?.iter()
+    results
+        .get(name)?
+        .iter()
         .find(|c| c.shares_per_minute == spm && c.scenario_key() == scenario_key)
         .and_then(|c| c.get(metric_key))
 }
 
 fn env_or<T: std::str::FromStr>(var: &str, default: T) -> T {
-    env::var(var).ok().and_then(|s| s.parse().ok()).unwrap_or(default)
+    env::var(var)
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(default)
 }
 
 fn env_or_seed(var: &str, default: u64) -> u64 {

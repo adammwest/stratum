@@ -324,8 +324,12 @@ fn run_trial_with_observer<V: Vardiff, F: FnMut(&V) -> Option<DecisionRecord>>(
             delta: decision.as_ref().map(|d| d.delta),
             threshold: decision.as_ref().map(|d| d.threshold),
             h_estimate: decision.as_ref().map(|d| d.h_estimate),
-            ratio_std: decision.as_ref().and_then(|d| d.uncertainty.map(|u| u.ratio_std)),
-            effective_n: decision.as_ref().and_then(|d| d.uncertainty.map(|u| u.effective_n)),
+            ratio_std: decision
+                .as_ref()
+                .and_then(|d| d.uncertainty.map(|u| u.ratio_std)),
+            effective_n: decision
+                .as_ref()
+                .and_then(|d| d.uncertainty.map(|u| u.effective_n)),
         });
 
         if let Some(new_h) = new_hashrate_opt {

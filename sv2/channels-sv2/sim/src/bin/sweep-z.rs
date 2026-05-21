@@ -268,7 +268,12 @@ fn build_report(
     for &spm in share_rates {
         out.push_str(&format!("| {} |", spm as u32));
         for &z in zs {
-            let v = lookup(z, spm, "cold_start_10gh_to_1ph", "ramp_target_overshoot_p90");
+            let v = lookup(
+                z,
+                spm,
+                "cold_start_10gh_to_1ph",
+                "ramp_target_overshoot_p90",
+            );
             out.push_str(&match v {
                 Some(x) => format!(" {:.1}% |", x * 100.0),
                 None => " — |".to_string(),
@@ -285,7 +290,12 @@ fn build_report(
     for &spm in share_rates {
         out.push_str(&format!("| {} |", spm as u32));
         for &z in zs {
-            let v = lookup(z, spm, "cold_start_10gh_to_1ph", "ramp_target_overshoot_p99");
+            let v = lookup(
+                z,
+                spm,
+                "cold_start_10gh_to_1ph",
+                "ramp_target_overshoot_p99",
+            );
             out.push_str(&match v {
                 Some(x) => format!(" {:.1}% |", x * 100.0),
                 None => " — |".to_string(),

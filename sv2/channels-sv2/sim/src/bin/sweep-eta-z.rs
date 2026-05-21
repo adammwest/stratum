@@ -120,7 +120,14 @@ fn main() -> std::io::Result<()> {
     fs::create_dir_all(&out_dir)?;
     let out_path = out_dir.join("eta_z_joint_sweep.md");
 
-    let report = build_report(&etas, &zs, &grid.share_rates, &results, trial_count, base_seed);
+    let report = build_report(
+        &etas,
+        &zs,
+        &grid.share_rates,
+        &results,
+        trial_count,
+        base_seed,
+    );
     fs::write(&out_path, &report)?;
     eprintln!("Wrote {}", out_path.display());
 
@@ -224,7 +231,8 @@ fn build_report(
             metric_key: "reaction_rate",
             direction: Direction::Higher,
             format: ValueFormat::Reaction2,
-            description: "Fraction of trials that fire within 5 min of a 50% drop in true hashrate.",
+            description:
+                "Fraction of trials that fire within 5 min of a 50% drop in true hashrate.",
         },
         MetricSpec {
             title: "Reaction rate at −10% step",
