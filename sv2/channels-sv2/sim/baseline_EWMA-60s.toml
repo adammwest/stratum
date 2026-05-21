@@ -186,6 +186,19 @@ variance_p90_ci_high = 0.11621266568147598
 variance_p99 = 0.17154268211225035
 variance_p99_ci_low = 0.15327265133196952
 variance_p99_ci_high = 0.18413679595395588
+upward_step_magnitude_p50 = 1.313692244647542
+upward_step_magnitude_p50_ci_low = 1.306825114027275
+upward_step_magnitude_p50_ci_high = 1.3234736205723818
+upward_step_magnitude_p90 = 1.4739810557120632
+upward_step_magnitude_p90_ci_low = 1.4581424946350465
+upward_step_magnitude_p90_ci_high = 1.4917191846260598
+upward_step_magnitude_p95 = 1.522160436824056
+upward_step_magnitude_p95_ci_low = 1.503363186843287
+upward_step_magnitude_p95_ci_high = 1.5362070728388622
+upward_step_magnitude_p99 = 1.6446649854182842
+upward_step_magnitude_p99_ci_low = 1.596957887407301
+upward_step_magnitude_p99_ci_high = 1.6666679864743426
+upward_step_magnitude_mean = 1.3229844017310384
 fire_decisiveness_mean = 12.926477394824207
 fire_decisiveness_p50 = 9.316442335923867
 
@@ -963,6 +976,19 @@ variance_p90_ci_high = 0.08602773135788103
 variance_p99 = 0.13198491555575625
 variance_p99_ci_low = 0.11527594943235552
 variance_p99_ci_high = 0.14275702302216114
+upward_step_magnitude_p50 = 1.2741615923169272
+upward_step_magnitude_p50_ci_low = 1.2675241517884284
+upward_step_magnitude_p50_ci_high = 1.2827306543429737
+upward_step_magnitude_p90 = 1.4020733869781774
+upward_step_magnitude_p90_ci_low = 1.3907299877698316
+upward_step_magnitude_p90_ci_high = 1.4143197924940407
+upward_step_magnitude_p95 = 1.4449032956054189
+upward_step_magnitude_p95_ci_low = 1.4265710421681912
+upward_step_magnitude_p95_ci_high = 1.4520738177295245
+upward_step_magnitude_p99 = 1.5258906993649433
+upward_step_magnitude_p99_ci_low = 1.5001759933384007
+upward_step_magnitude_p99_ci_high = 1.55722840378446
+upward_step_magnitude_mean = 1.2791274454424035
 fire_decisiveness_mean = 11.421915440111151
 fire_decisiveness_p50 = 8.287837631266722
 
@@ -1740,6 +1766,19 @@ variance_p90_ci_high = 0.06571085168365094
 variance_p99 = 0.09025417284810176
 variance_p99_ci_low = 0.08582706804610662
 variance_p99_ci_high = 0.10024376228286717
+upward_step_magnitude_p50 = 1.2423758503540907
+upward_step_magnitude_p50_ci_low = 1.2364981981955079
+upward_step_magnitude_p50_ci_high = 1.246023715870193
+upward_step_magnitude_p90 = 1.352849356276339
+upward_step_magnitude_p90_ci_low = 1.3443568820478105
+upward_step_magnitude_p90_ci_high = 1.3656160080412527
+upward_step_magnitude_p95 = 1.3938547472911675
+upward_step_magnitude_p95_ci_low = 1.376355011158808
+upward_step_magnitude_p95_ci_high = 1.406215797547587
+upward_step_magnitude_p99 = 1.478365024704297
+upward_step_magnitude_p99_ci_low = 1.4444802648687647
+upward_step_magnitude_p99_ci_high = 1.5000000335544323
+upward_step_magnitude_mean = 1.2484287335818178
 fire_decisiveness_mean = 10.454643557209813
 fire_decisiveness_p50 = 7.770208746710647
 
@@ -2517,6 +2556,19 @@ variance_p90_ci_high = 0.05492973868767707
 variance_p99 = 0.0769969467348407
 variance_p99_ci_low = 0.07075339197222984
 variance_p99_ci_high = 0.09061052379527128
+upward_step_magnitude_p50 = 1.222998932767722
+upward_step_magnitude_p50_ci_low = 1.2185580707436152
+upward_step_magnitude_p50_ci_high = 1.2279143886842105
+upward_step_magnitude_p90 = 1.3208590397062017
+upward_step_magnitude_p90_ci_low = 1.314807352836498
+upward_step_magnitude_p90_ci_high = 1.3337501688626812
+upward_step_magnitude_p95 = 1.352892972567708
+upward_step_magnitude_p95_ci_low = 1.3411532161822828
+upward_step_magnitude_p95_ci_high = 1.3648364714668877
+upward_step_magnitude_p99 = 1.4327244377660715
+upward_step_magnitude_p99_ci_low = 1.4037146501537698
+upward_step_magnitude_p99_ci_high = 1.4431969210900766
+upward_step_magnitude_mean = 1.2252198826315597
 fire_decisiveness_mean = 9.233608429280237
 fire_decisiveness_p50 = 6.871385040325102
 
@@ -3294,6 +3346,19 @@ variance_p90_ci_high = 0.04332026953706273
 variance_p99 = 0.058813563224525967
 variance_p99_ci_low = 0.05328335970233093
 variance_p99_ci_high = 0.06536513743269019
+upward_step_magnitude_p50 = 1.194813612174246
+upward_step_magnitude_p50_ci_low = 1.1902049571494566
+upward_step_magnitude_p50_ci_high = 1.1989340744691714
+upward_step_magnitude_p90 = 1.2780799560437925
+upward_step_magnitude_p90_ci_low = 1.2732874975312327
+upward_step_magnitude_p90_ci_high = 1.2876961172406216
+upward_step_magnitude_p95 = 1.3121992597687235
+upward_step_magnitude_p95_ci_low = 1.300262444250723
+upward_step_magnitude_p95_ci_high = 1.3203210139129427
+upward_step_magnitude_p99 = 1.369455572003699
+upward_step_magnitude_p99_ci_low = 1.3513934981231976
+upward_step_magnitude_p99_ci_high = 1.3814922380862957
+upward_step_magnitude_mean = 1.1983687741274889
 fire_decisiveness_mean = 8.104445052452597
 fire_decisiveness_p50 = 6.072450504318056
 
@@ -4071,6 +4136,19 @@ variance_p90_ci_high = 0.033431965896609885
 variance_p99 = 0.046006299234909204
 variance_p99_ci_low = 0.042009804694068766
 variance_p99_ci_high = 0.051908519653179074
+upward_step_magnitude_p50 = 1.169825229191261
+upward_step_magnitude_p50_ci_low = 1.1653448411081426
+upward_step_magnitude_p50_ci_high = 1.1730350861407426
+upward_step_magnitude_p90 = 1.243214448843757
+upward_step_magnitude_p90_ci_low = 1.234725036855597
+upward_step_magnitude_p90_ci_high = 1.251318486814139
+upward_step_magnitude_p95 = 1.2731042659384633
+upward_step_magnitude_p95_ci_low = 1.2633355213060244
+upward_step_magnitude_p95_ci_high = 1.2793341718429174
+upward_step_magnitude_p99 = 1.3201247341726727
+upward_step_magnitude_p99_ci_low = 1.3003756819713534
+upward_step_magnitude_p99_ci_high = 1.329953592448488
+upward_step_magnitude_mean = 1.1696135906233496
 fire_decisiveness_mean = 6.951499235759935
 fire_decisiveness_p50 = 5.180254042838921
 
@@ -4848,6 +4926,19 @@ variance_p90_ci_high = 0.02641542894511846
 variance_p99 = 0.034071919480614346
 variance_p99_ci_low = 0.032857221649228455
 variance_p99_ci_high = 0.03660288823177521
+upward_step_magnitude_p50 = 1.1501880160342424
+upward_step_magnitude_p50_ci_low = 1.1463184647156017
+upward_step_magnitude_p50_ci_high = 1.1532105331332534
+upward_step_magnitude_p90 = 1.2134618235451586
+upward_step_magnitude_p90_ci_low = 1.2072261045412933
+upward_step_magnitude_p90_ci_high = 1.2205432622990566
+upward_step_magnitude_p95 = 1.238943553114695
+upward_step_magnitude_p95_ci_low = 1.2306558538837626
+upward_step_magnitude_p95_ci_high = 1.2471840235988823
+upward_step_magnitude_p99 = 1.285957550205151
+upward_step_magnitude_p99_ci_low = 1.2707921003586968
+upward_step_magnitude_p99_ci_high = 1.3081515262285488
+upward_step_magnitude_mean = 1.1509164068622197
 fire_decisiveness_mean = 6.140338955386489
 fire_decisiveness_p50 = 4.725081859667657
 
@@ -5625,6 +5716,19 @@ variance_p90_ci_high = 0.021437761062178165
 variance_p99 = 0.0298106143451124
 variance_p99_ci_low = 0.028568408534639923
 variance_p99_ci_high = 0.031180755180515756
+upward_step_magnitude_p50 = 1.1359098068330515
+upward_step_magnitude_p50_ci_low = 1.1325750676325328
+upward_step_magnitude_p50_ci_high = 1.1388796498808775
+upward_step_magnitude_p90 = 1.1973355237316798
+upward_step_magnitude_p90_ci_low = 1.1922619177289588
+upward_step_magnitude_p90_ci_high = 1.2024543591017895
+upward_step_magnitude_p95 = 1.2149444557723537
+upward_step_magnitude_p95_ci_low = 1.2081901670280695
+upward_step_magnitude_p95_ci_high = 1.218395925635355
+upward_step_magnitude_p99 = 1.2389945318640263
+upward_step_magnitude_p99_ci_low = 1.2305455847848181
+upward_step_magnitude_p99_ci_high = 1.2543469433231544
+upward_step_magnitude_mean = 1.1344334093298791
 fire_decisiveness_mean = 5.570752425347125
 fire_decisiveness_p50 = 4.072111452969947
 
@@ -6229,66 +6333,74 @@ step_correction_mean = 0.42635169320930966
 step_correction_p50 = 0.4081234633922577
 
 [derived.operational_fitness.spm_6]
-score = 0.6302411791730029
+score = 0.46718330947725834
 reaction_10_component = 0.53
 reaction_50_component = 0.853
 jitter_component = 0.7048426060851103
+step_safety_component = 0
 convergence_component = 0.6
 overshoot_component = 0.36172657955980747
 
 [derived.operational_fitness.spm_8]
-score = 0.6899316062096312
+score = 0.5348286203487381
 reaction_10_component = 0.56
 reaction_50_component = 0.922
 jitter_component = 0.7109732388363275
+step_safety_component = 0.11019340878916228
 convergence_component = 0.7
 overshoot_component = 0.48336958442365674
 
 [derived.operational_fitness.spm_10]
-score = 0.6647194298032407
+score = 0.5471637772617421
 reaction_10_component = 0.521
 reaction_50_component = 0.941
 jitter_component = 0.7114344220817046
+step_safety_component = 0.21229050541766492
 convergence_component = 0.6
 overshoot_component = 0.5398254538689973
 
 [derived.operational_fitness.spm_12]
-score = 0.6779974822252849
+score = 0.5779287269573834
 reaction_10_component = 0.53
 reaction_50_component = 0.965
 jitter_component = 0.7175546203190502
+step_safety_component = 0.2942140548645842
 convergence_component = 0.6
 overshoot_component = 0.589865581614748
 
 [derived.operational_fitness.spm_15]
-score = 0.7021433048350224
+score = 0.6146858039854174
 reaction_10_component = 0.586
 reaction_50_component = 0.985
 jitter_component = 0.7148425806951374
+step_safety_component = 0.37560148046255293
 convergence_component = 0.6
 overshoot_component = 0.656747886959949
 
 [derived.operational_fitness.spm_20]
-score = 0.6995039894904386
+score = 0.6356148505571974
 reaction_10_component = 0.541
 reaction_50_component = 0.994
 jitter_component = 0.7232598807198087
+step_safety_component = 0.45379146812307347
 convergence_component = 0.6
 overshoot_component = 0.7080201334647682
 
 [derived.operational_fitness.spm_25]
-score = 0.6863682983045405
+score = 0.6468591638541064
 reaction_10_component = 0.565
 reaction_50_component = 1
 jitter_component = 0.7292528421382685
+step_safety_component = 0.5221128937706099
 convergence_component = 0.5
 overshoot_component = 0.7426772987688677
 
 [derived.operational_fitness.spm_30]
-score = 0.7641384626154339
+score = 0.7076949030948472
 reaction_10_component = 0.564
 reaction_50_component = 0.999
 jitter_component = 0.7465733673118027
+step_safety_component = 0.5701110884552927
 convergence_component = 0.8
 overshoot_component = 0.7402378915307337
 

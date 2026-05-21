@@ -2148,45 +2148,47 @@ impl DerivedMetric for DecouplingScore {
 
 // ---- OperationalFitness ---------------------------------------------------
 
-/// Per-share-rate composite metric weighted for real-world pool operation:
+/// Per-share-rate composite metric weighted for real-world pool operation.
+///
+/// Goal statement: "The ideal vardiff algorithm keeps shares flowing at a
+/// predictable rate without ever surprising the miner with a difficulty it
+/// can't meet. When hashrate changes, it should notice within a few minutes
+/// — but it should never react so aggressively that it causes rejected
+/// shares or connection loss."
 ///
 /// ```text
-/// fitness = 0.25 × reaction_rate(Step −10%)
-///         + 0.20 × reaction_rate(Step −50%)
-///         + 0.20 × clamp(1 − jitter_mean / 0.30, 0, 1)
+/// fitness = 0.15 × reaction_rate(Step −10%)
+///         + 0.10 × reaction_rate(Step −50%)
+///         + 0.25 × clamp(1 − jitter_mean / 0.30, 0, 1)
+///         + 0.25 × clamp(1 − (step_magnitude_p95 − 1.0) / 0.5, 0, 1)
 ///         + 0.15 × convergence_rate × clamp(1 − conv_p50 / 600s, 0, 1)
-///         + 0.10 × asymmetry_preference
 ///         + 0.10 × clamp(1 − overshoot_p99, 0, 1)
 /// ```
 ///
-/// The `asymmetry_preference` term is computed as:
+/// The `step_magnitude_safety` term penalizes large upward difficulty
+/// jumps — the direct causal precursor to `difficulty-too-low` share
+/// rejections and miner timeout disconnections. A p95 step of 1.0×
+/// (no upward adjustment) scores 1.0; a 1.5× jump (50% increase)
+/// scores 0.0.
 ///
-/// ```text
-/// clamp(reaction_rate(Step −10%) / reaction_rate(Step +10%), 0, 1)
-/// ```
-///
-/// This rewards algorithms that detect hashrate drops faster than
-/// spikes — operationally more valuable because drops indicate
-/// failing hardware or disconnections that require prompt difficulty
-/// adjustment, while upward spikes are benign (miner simply earns
-/// fewer shares until the next retarget).
-///
-/// Convergence is now both pass/fail (rate) AND speed (p50 time).
+/// Convergence is both pass/fail (rate) AND speed (p50 time).
 /// A 60s convergence scores 1.0; 600s (10 min) scores 0.0.
-/// This penalizes algorithms that converge slowly even if they
-/// eventually get there.
 ///
 /// Higher is better. Weights reflect operational priorities:
-/// - Small-change detection (25%): the primary value — detecting 10%
-///   hashrate declines (failing ASICs, thermal throttling) within
-///   minutes is worth more than detecting catastrophic drops.
-/// - Large-change detection (20%): still important for disconnects.
-/// - Jitter control (20%): tighter tolerance (0.10 fires/min ceiling
-///   vs the old 0.50). Excessive jitter destabilizes share submission
-///   rate and confuses monitoring.
-/// - Convergence (15%): new miners must reach correct difficulty fast.
-/// - Asymmetry preference (10%): prefer down-detection over up-detection.
+///
+/// Harm-avoidance cluster (60% total):
+/// - Jitter control (25%): predictable share rate in steady state.
+/// - Step magnitude safety (25%): never surprise the miner with an
+///   unreachable difficulty. A single large upward jump causes ~2 min
+///   of lost mining (miner timeout + reconnect + re-negotiate).
 /// - Overshoot safety (10%): cold-start ramp shouldn't overshoot truth.
+///
+/// Reactivity cluster (25% total):
+/// - Small-change detection (15%): detect 10% hashrate declines
+///   (failing ASICs, thermal throttling) within a few retarget windows.
+/// - Large-change detection (10%): detect catastrophic 50% drops.
+///
+/// Convergence (15%): new miners must reach correct difficulty reasonably fast.
 #[derive(Debug, Clone, Default)]
 pub struct OperationalFitness;
 
@@ -2203,9 +2205,9 @@ impl DerivedMetric for OperationalFitness {
         #[derive(Default, Clone)]
         struct Inputs {
             reaction_10: Option<f64>,
-            reaction_plus_10: Option<f64>,
             reaction_50: Option<f64>,
             jitter_mean: Option<f64>,
+            step_magnitude_p95: Option<f64>,
             convergence_rate: Option<f64>,
             convergence_p50_secs: Option<f64>,
             overshoot_p99: Option<f64>,
@@ -2219,15 +2221,13 @@ impl DerivedMetric for OperationalFitness {
                     if let Some(j) = r.get("jitter_mean_per_min") {
                         entry.jitter_mean = Some(j);
                     }
+                    if let Some(s) = r.get("upward_step_magnitude_p95") {
+                        entry.step_magnitude_p95 = Some(s);
+                    }
                 }
                 Scenario::Step { delta_pct: -10 } => {
                     if let Some(rate) = r.get("reaction_rate") {
                         entry.reaction_10 = Some(rate);
-                    }
-                }
-                Scenario::Step { delta_pct: 10 } => {
-                    if let Some(rate) = r.get("reaction_rate") {
-                        entry.reaction_plus_10 = Some(rate);
                     }
                 }
                 Scenario::Step { delta_pct: -50 } => {
@@ -2261,38 +2261,29 @@ impl DerivedMetric for OperationalFitness {
             .into_iter()
             .filter_map(|(spm, inp)| {
                 let r10 = inp.reaction_10.unwrap_or(0.0);
-                let r_plus_10 = inp.reaction_plus_10.unwrap_or(0.0);
                 let r50 = inp.reaction_50.unwrap_or(0.0);
                 let jitter = inp.jitter_mean.unwrap_or(1.0);
+                let step_mag = inp.step_magnitude_p95.unwrap_or(1.5);
                 let conv_rate = inp.convergence_rate.unwrap_or(0.0);
                 let conv_secs = inp.convergence_p50_secs.unwrap_or(CONV_CEILING_SECS);
                 let overshoot = inp.overshoot_p99.unwrap_or(1.0);
 
                 let jitter_factor = (1.0 - jitter / 0.30).clamp(0.0, 1.0);
                 let overshoot_factor = (1.0 - overshoot).clamp(0.0, 1.0);
+                // Step magnitude safety: penalizes large upward difficulty jumps.
+                // 1.0× (no jump) → 1.0; 1.5× (50% jump) → 0.0; linear between.
+                let step_safety = (1.0 - (step_mag - 1.0) / 0.5).clamp(0.0, 1.0);
                 // Convergence factor: combines rate (did it converge?) with speed (how fast?)
                 // conv_rate gates: if it didn't converge, speed is irrelevant (score 0).
                 // Speed: 60s → 1.0, 600s → 0.0, linear between.
                 let speed_factor = (1.0 - conv_secs / CONV_CEILING_SECS).clamp(0.0, 1.0);
                 let convergence_factor = conv_rate * speed_factor;
-                // Asymmetry preference: rewards algorithms that detect drops faster
-                // than spikes. ratio > 1 means down-detection is faster (good);
-                // clamped to [0, 1] so it saturates at parity.
-                let asymmetry_preference = if r_plus_10 > 0.0 {
-                    (r10 / r_plus_10).clamp(0.0, 1.0)
-                } else if r10 > 0.0 {
-                    // Down-detection fires but up-detection doesn't → perfect
-                    1.0
-                } else {
-                    // Neither fires → no preference observable
-                    0.0
-                };
 
-                let score = 0.25 * r10
-                    + 0.20 * r50
-                    + 0.20 * jitter_factor
+                let score = 0.15 * r10
+                    + 0.10 * r50
+                    + 0.25 * jitter_factor
+                    + 0.25 * step_safety
                     + 0.15 * convergence_factor
-                    + 0.10 * asymmetry_preference
                     + 0.10 * overshoot_factor;
 
                 let mut mv = MetricValues::new();
@@ -2300,8 +2291,8 @@ impl DerivedMetric for OperationalFitness {
                 mv.set("reaction_10_component", Some(r10));
                 mv.set("reaction_50_component", Some(r50));
                 mv.set("jitter_component", Some(jitter_factor));
+                mv.set("step_safety_component", Some(step_safety));
                 mv.set("convergence_component", Some(convergence_factor));
-                mv.set("asymmetry_preference_component", Some(asymmetry_preference));
                 mv.set("overshoot_component", Some(overshoot_factor));
                 Some((spm as f32, mv))
             })
@@ -2336,11 +2327,11 @@ impl DerivedMetric for OperationalFitness {
         }
         w.push_str("## Operational fitness (per share rate)\n\n");
         w.push_str(
-            "`0.25×react(-10%) + 0.2×react(-50%) + 0.2×(1-jitter/0.3) + \
-             0.15×(conv_rate×conv_speed) + 0.1×asymmetry_pref + 0.1×(1-overshoot)`. Higher is better.\n\n",
+            "`0.15×react(-10%) + 0.1×react(-50%) + 0.25×jitter + \
+             0.25×step_safety + 0.15×convergence + 0.1×overshoot`. Higher is better.\n\n",
         );
         w.push_str(
-            "| share/min | fitness | react-10% | react-50% | jitter | conv | asym | overshoot |\n",
+            "| share/min | fitness | react-10% | react-50% | jitter | step-safe | conv | overshoot |\n",
         );
         w.push_str("| --- | --- | --- | --- | --- | --- | --- | --- |\n");
         for (spm, mv) in scores {
@@ -2355,8 +2346,8 @@ impl DerivedMetric for OperationalFitness {
                 s("reaction_10_component"),
                 s("reaction_50_component"),
                 s("jitter_component"),
+                s("step_safety_component"),
                 s("convergence_component"),
-                s("asymmetry_preference_component"),
                 s("overshoot_component"),
             ));
         }

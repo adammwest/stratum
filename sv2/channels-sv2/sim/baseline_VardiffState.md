@@ -17,7 +17,7 @@ Headline per-metric values at each share rate's best and worst cells. ↑ = high
 | reaction rate at +50% step | ↑ | 84.7% @ SPM=12 | 79.0% @ SPM=30 |
 | ramp target overshoot p99 (cold start) | ↓ | 0.0% @ SPM=30 (floor: 42.5%) | 36.1% @ SPM=6 (floor: 95.0%) |
 | upward step magnitude p95 (stable) | ↓ | 1.000 @ SPM=25 | 1.384 @ SPM=6 |
-| operational fitness | ↑ | 0.859 @ SPM=30 | 0.731 @ SPM=8 |
+| operational fitness | ↑ | 0.909 @ SPM=30 | 0.568 @ SPM=6 |
 | decoupling score | ↑ | 0.998 @ SPM=15 | 0.777 @ SPM=6 |
 | max |reaction asymmetry| | ↓ | 0.151 @ SPM=8 | 0.733 @ SPM=30 |
 
@@ -122,18 +122,18 @@ Post-convergence rate of vardiff fires. Smaller is better — ideal is zero unde
 
 ## Operational fitness (per share rate)
 
-`0.25×react(-10%) + 0.2×react(-50%) + 0.2×(1-jitter/0.3) + 0.15×(conv_rate×conv_speed) + 0.1×asymmetry_pref + 0.1×(1-overshoot)`. Higher is better.
+`0.15×react(-10%) + 0.1×react(-50%) + 0.25×jitter + 0.25×step_safety + 0.15×convergence + 0.1×overshoot`. Higher is better.
 
-| share/min | fitness | react-10% | react-50% | jitter | conv | asym | overshoot |
+| share/min | fitness | react-10% | react-50% | jitter | step-safe | conv | overshoot |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 6 | 0.741 | 0.647 | 0.984 | 0.642 | 0.600 | 1.000 | 0.639 |
-| 8 | 0.731 | 0.563 | 0.987 | 0.721 | 0.500 | 1.000 | 0.735 |
-| 10 | 0.732 | 0.476 | 0.990 | 0.790 | 0.500 | 1.000 | 0.816 |
-| 12 | 0.752 | 0.443 | 0.990 | 0.851 | 0.600 | 1.000 | 0.834 |
-| 15 | 0.810 | 0.428 | 0.998 | 0.912 | 0.900 | 1.000 | 0.859 |
-| 20 | 0.841 | 0.474 | 0.994 | 0.974 | 0.900 | 1.000 | 0.942 |
-| 25 | 0.858 | 0.523 | 0.997 | 0.993 | 0.900 | 1.000 | 0.942 |
-| 30 | 0.859 | 0.500 | 0.996 | 0.998 | 0.900 | 1.000 | 1.000 |
+| 6 | 0.568 | 0.647 | 0.984 | 0.642 | 0.232 | 0.600 | 0.639 |
+| 8 | 0.591 | 0.563 | 0.987 | 0.721 | 0.317 | 0.500 | 0.735 |
+| 10 | 0.625 | 0.476 | 0.990 | 0.790 | 0.403 | 0.500 | 0.816 |
+| 12 | 0.672 | 0.443 | 0.990 | 0.851 | 0.483 | 0.600 | 0.834 |
+| 15 | 0.751 | 0.428 | 0.998 | 0.912 | 0.554 | 0.900 | 0.859 |
+| 20 | 0.810 | 0.474 | 0.994 | 0.974 | 0.667 | 0.900 | 0.942 |
+| 25 | 0.906 | 0.523 | 0.997 | 0.993 | 1.000 | 0.900 | 0.942 |
+| 30 | 0.909 | 0.500 | 0.996 | 0.998 | 1.000 | 0.900 | 1.000 |
 
 ## Decoupling score (per share rate)
 

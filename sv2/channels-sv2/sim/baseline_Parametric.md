@@ -16,7 +16,8 @@ Headline per-metric values at each share rate's best and worst cells. ↑ = high
 | reaction rate at −50% step | ↑ | 21.4% @ SPM=30 | 3.6% @ SPM=8 |
 | reaction rate at +50% step | ↑ | 23.9% @ SPM=30 | 4.0% @ SPM=6 |
 | ramp target overshoot p99 (cold start) | ↓ | 23.6% @ SPM=30 (floor: 42.5%) | 69.1% @ SPM=6 (floor: 95.0%) |
-| operational fitness | ↑ | 0.320 @ SPM=30 | 0.239 @ SPM=6 |
+| upward step magnitude p95 (stable) | ↓ | 1.000 @ SPM=6 | 1.000 @ SPM=6 |
+| operational fitness | ↑ | 0.598 @ SPM=30 | 0.535 @ SPM=6 |
 | decoupling score | ↑ | 0.214 @ SPM=30 | 0.036 @ SPM=8 |
 | max |reaction asymmetry| | ↓ | 0.003 @ SPM=6 | 0.025 @ SPM=30 |
 
@@ -164,20 +165,35 @@ Population variance of `H̃ / H_true` over post-settle ticks (dimensionless). Po
 | 25 | 0.0% | 2.0% | 13.4% | 33.8% | 5.0% |
 | 30 | 0.0% | 1.7% | 12.2% | 23.6% | 4.3% |
 
+## Upward step magnitude (stable load)
+
+`new_hashrate / old_hashrate` for upward difficulty adjustments during steady-state. Per-trial p95 of ratios, then distribution across trials. Values near 1.0 indicate gentle retargeting; values >> 1.0 indicate aggressive jumps.
+
+| share/min | p50 | p90 | p95 | p99 | mean |
+| --- | --- | --- | --- | --- | --- |
+| 6 | 1.000 | 1.000 | 1.000 | 1.500 | 1.015 |
+| 8 | 1.000 | 1.000 | 1.000 | 1.500 | 1.013 |
+| 10 | 1.000 | 1.000 | 1.000 | 1.440 | 1.009 |
+| 12 | 1.000 | 1.000 | 1.000 | 1.000 | 1.005 |
+| 15 | 1.000 | 1.000 | 1.000 | 1.000 | 1.005 |
+| 20 | 1.000 | 1.000 | 1.000 | 1.000 | 1.006 |
+| 25 | 1.000 | 1.000 | 1.000 | 1.000 | 1.003 |
+| 30 | 1.000 | 1.000 | 1.000 | 1.250 | 1.005 |
+
 ## Operational fitness (per share rate)
 
-`0.25×react(-10%) + 0.2×react(-50%) + 0.2×(1-jitter/0.3) + 0.25×(conv_rate×conv_speed) + 0.1×(1-overshoot)`. Higher is better.
+`0.15×react(-10%) + 0.1×react(-50%) + 0.25×jitter + 0.25×step_safety + 0.15×convergence + 0.1×overshoot`. Higher is better.
 
-| share/min | fitness | react-10% | react-50% | jitter | conv | overshoot |
-| --- | --- | --- | --- | --- | --- | --- |
-| 6 | 0.239 | 0.002 | 0.037 | 0.999 | 0.000 | 0.309 |
-| 8 | 0.246 | 0.007 | 0.036 | 0.999 | 0.000 | 0.369 |
-| 10 | 0.257 | 0.002 | 0.064 | 0.998 | 0.000 | 0.439 |
-| 12 | 0.264 | 0.005 | 0.063 | 1.000 | 0.000 | 0.499 |
-| 15 | 0.269 | 0.000 | 0.087 | 0.999 | 0.000 | 0.513 |
-| 20 | 0.293 | 0.002 | 0.142 | 0.999 | 0.000 | 0.642 |
-| 25 | 0.303 | 0.002 | 0.184 | 1.000 | 0.000 | 0.662 |
-| 30 | 0.320 | 0.005 | 0.214 | 0.999 | 0.000 | 0.764 |
+| share/min | fitness | react-10% | react-50% | jitter | step-safe | conv | overshoot |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 6 | 0.535 | 0.002 | 0.037 | 0.999 | 1.000 | 0.000 | 0.309 |
+| 8 | 0.541 | 0.007 | 0.036 | 0.999 | 1.000 | 0.000 | 0.369 |
+| 10 | 0.550 | 0.002 | 0.064 | 0.998 | 1.000 | 0.000 | 0.439 |
+| 12 | 0.557 | 0.005 | 0.063 | 1.000 | 1.000 | 0.000 | 0.499 |
+| 15 | 0.560 | 0.000 | 0.087 | 0.999 | 1.000 | 0.000 | 0.513 |
+| 20 | 0.579 | 0.002 | 0.142 | 0.999 | 1.000 | 0.000 | 0.642 |
+| 25 | 0.585 | 0.002 | 0.184 | 1.000 | 1.000 | 0.000 | 0.662 |
+| 30 | 0.598 | 0.005 | 0.214 | 0.999 | 1.000 | 0.000 | 0.764 |
 
 ## Decoupling score (per share rate)
 

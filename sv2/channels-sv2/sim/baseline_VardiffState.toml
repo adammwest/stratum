@@ -5773,75 +5773,75 @@ step_correction_mean = 0.4651413485973696
 step_correction_p50 = 0.45474642515182495
 
 [derived.operational_fitness.spm_6]
-score = 0.7407268168069275
+score = 0.5677691699111346
 reaction_10_component = 0.647
 reaction_50_component = 0.984
 jitter_component = 0.6415633948614925
+step_safety_component = 0.23225673344452957
 convergence_component = 0.6
-asymmetry_preference_component = 1
 overshoot_component = 0.6386413783462912
 
 [derived.operational_fitness.spm_8]
-score = 0.7309583540899335
+score = 0.5912626270560138
 reaction_10_component = 0.563
 reaction_50_component = 0.987
 jitter_component = 0.7214967851965048
+step_safety_component = 0.3169177348250205
 convergence_component = 0.5
-asymmetry_preference_component = 1
 overshoot_component = 0.735089970506325
 
 [derived.operational_fitness.spm_10]
-score = 0.7316047944484777
+score = 0.6253643884790943
 reaction_10_component = 0.476
 reaction_50_component = 0.99
 jitter_component = 0.789864366423755
+step_safety_component = 0.4034655028377152
 convergence_component = 0.5
-asymmetry_preference_component = 1
 overshoot_component = 0.8163192116372677
 
 [derived.operational_fitness.spm_12]
-score = 0.7523414870596751
+score = 0.672422958907715
 reaction_10_component = 0.443
 reaction_50_component = 0.99
 jitter_component = 0.8509475123802884
+step_safety_component = 0.4833363849161021
 convergence_component = 0.6
-asymmetry_preference_component = 1
 overshoot_component = 0.8340198458361734
 
 [derived.operational_fitness.spm_15]
-score = 0.8098844126939115
+score = 0.7512994158236448
 reaction_10_component = 0.428
 reaction_50_component = 0.998
 jitter_component = 0.9121085354833821
+step_safety_component = 0.5536383054222567
 convergence_component = 0.9
-asymmetry_preference_component = 1
 overshoot_component = 0.8586270559723501
 
 [derived.operational_fitness.spm_20]
-score = 0.8412956441719426
+score = 0.8099362136495128
 reaction_10_component = 0.474
 reaction_50_component = 0.994
 jitter_component = 0.9738788883983025
+step_safety_component = 0.6669865002306206
 convergence_component = 0.9
-asymmetry_preference_component = 1
 overshoot_component = 0.9421986649228205
 
 [derived.operational_fitness.spm_25]
-score = 0.8579448470647593
+score = 0.9056021314213667
 reaction_10_component = 0.523
 reaction_50_component = 0.997
 jitter_component = 0.9931456871321488
+step_safety_component = 1
 convergence_component = 0.9
-asymmetry_preference_component = 1
 overshoot_component = 0.9416570963832953
 
 [derived.operational_fitness.spm_30]
-score = 0.8588213099262585
+score = 0.9091267615592229
 reaction_10_component = 0.5
 reaction_50_component = 0.996
 jitter_component = 0.9981090326592921
+step_safety_component = 1
 convergence_component = 0.9
-asymmetry_preference_component = 1
 overshoot_component = 0.9999950339439994
 
 [derived.decoupling_score.spm_6]
