@@ -2,8 +2,6 @@
 /// providing methods to verify the correctness of any specific implementation.
 use std::{thread, time::Duration};
 
-
-
 use super::Vardiff;
 use crate::target::hash_rate_to_target;
 use bitcoin::Target;

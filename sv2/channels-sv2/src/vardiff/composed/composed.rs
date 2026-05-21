@@ -144,9 +144,9 @@ where
         }
 
         // Stage 3: UpdateRule computes the new target.
-        let mut new_hashrate = self
-            .update
-            .next_hashrate(&snap, hashrate, delta, threshold, shares_per_minute);
+        let mut new_hashrate =
+            self.update
+                .next_hashrate(&snap, hashrate, delta, threshold, shares_per_minute);
 
         if new_hashrate < self.min_allowed_hashrate {
             new_hashrate = self.min_allowed_hashrate;

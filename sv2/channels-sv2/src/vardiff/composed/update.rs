@@ -243,7 +243,12 @@ impl AdaptivePartialRetarget {
         }
     }
 
-    pub fn with_scales(eta_base: f32, reference_margin: f64, min_scale: f32, max_scale: f32) -> Self {
+    pub fn with_scales(
+        eta_base: f32,
+        reference_margin: f64,
+        min_scale: f32,
+        max_scale: f32,
+    ) -> Self {
         Self {
             eta_base,
             reference_margin,

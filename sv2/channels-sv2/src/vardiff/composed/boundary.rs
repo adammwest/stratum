@@ -548,7 +548,10 @@ mod tests {
         assert_eq!(a.z, b.z);
         assert_eq!(a.margin, b.margin);
         for &(dt, spm) in &[(60u64, 12.0f32), (600, 60.0), (1800, 120.0)] {
-            assert_eq!(a.threshold(dt, spm, &dummy_snap()), b.threshold(dt, spm, &dummy_snap()));
+            assert_eq!(
+                a.threshold(dt, spm, &dummy_snap()),
+                b.threshold(dt, spm, &dummy_snap())
+            );
         }
     }
 }

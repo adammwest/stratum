@@ -543,7 +543,9 @@ impl Estimator for BayesianEstimator {
         // after a target change we should be somewhat uncertain about
         // whether the new target is exactly right.
         let info_accumulated = self.alpha.min(self.beta);
-        let preserved = info_accumulated.min(self.prior_shares * 4.0).max(self.prior_shares);
+        let preserved = info_accumulated
+            .min(self.prior_shares * 4.0)
+            .max(self.prior_shares);
         self.alpha = preserved;
         self.beta = preserved; // ratio_mean = 1.0
 
