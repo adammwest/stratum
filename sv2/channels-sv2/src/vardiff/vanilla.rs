@@ -9,51 +9,6 @@ const DEFAULT_MIN_HASHRATE: f32 = 1.0;
 
 use super::{error::VardiffError, Vardiff};
 
-/// Four-parameter decreasing update threshold curve.
-///
-/// required_pct(t) =
-///     floor_pct + (start_pct - floor_pct) / (1.0 + t / half_life_secs).powf(power)
-#[derive(Debug, Clone, Copy)]
-pub struct VardiffUpdateCurve {
-    pub start_pct: f32,
-    pub floor_pct: f32,
-    pub half_life_secs: f32,
-    pub power: f32,
-}
-
-impl Default for VardiffUpdateCurve {
-    fn default() -> Self {
-        // [3987/5000] NEW BEST restart=5 score=-28.806006 reg=1.030669 beat=60.588408
-        // start=159.10 floor=10.81 half_life=323.18s power=3.7153 step=0.02295
-        // | cold(r=0.070,b=18.788) stable(r=0.239,b=0.750) stepR(r=0.178,b=20.129) stepQ(r=0.104,b=1.056)
-        // | SP50:0.080565 | SP99:0.235212 | CR:91.02% | CP50:502.8s | CP99:1123.2s
-        // | RR:0.273750 | RP50:195.0s | RP99:273.8s | JP50:0.025348 | JM:0.035533 | JP99:0.126243
-        Self {
-            start_pct: 159.10,
-            floor_pct: 10.81,
-            half_life_secs: 323.18,
-            power: 3.7153,
-        }
-    }
-}
-
-impl VardiffUpdateCurve {
-    pub fn required_delta_pct(&self, elapsed_secs: u64) -> f32 {
-        let t = elapsed_secs as f32;
-        let start = self.start_pct.max(0.0);
-        let floor = self.floor_pct.max(0.0);
-        let floor = floor.min(start);
-        let half_life = self.half_life_secs.max(1.0);
-        let power = self.power.max(0.05);
-
-        floor + (start - floor) / (1.0 + t / half_life).powf(power)
-    }
-    
-    pub fn should_update(&self, delta_pct: f32, elapsed_secs: u64) -> bool {
-        delta_pct >= self.required_delta_pct(elapsed_secs)
-    }
-}
-
 /// Represents the dynamic state for a variable difficulty (Vardiff) connection.
 ///
 /// Tracks performance and adjusts the mining target to achieve a desired share rate.
@@ -77,8 +32,6 @@ pub struct VardiffState {
     /// via struct literal (e.g., custom impl Clock + Arc::new). The
     /// constructors are still the recommended path.
     pub clock: Arc<dyn Clock>,
-    /// Parameterized update threshold curve.
-    pub update_curve: VardiffUpdateCurve,
 }
 
 // `Arc<dyn Clock>` does not auto-implement `UnwindSafe` / `RefUnwindSafe`
@@ -89,7 +42,7 @@ pub struct VardiffState {
 // interior mutability that could leave the type inconsistent after a panic.
 //
 // This preserves the auto-trait impls that `VardiffState` had prior to the
-// `Clock` injection refactor - required for semver compatibility.
+// `Clock` injection refactor — required for semver compatibility.
 impl std::panic::UnwindSafe for VardiffState {}
 impl std::panic::RefUnwindSafe for VardiffState {}
 
@@ -124,30 +77,6 @@ impl VardiffState {
         min_allowed_hashrate: f32,
         clock: Arc<dyn Clock>,
     ) -> Result<Self, VardiffError> {
-        Self::new_with_clock_and_update_curve(
-            min_allowed_hashrate,
-            clock,
-            VardiffUpdateCurve::default(),
-        )
-    }
-
-    pub fn new_with_update_curve(
-        min_allowed_hashrate: f32,
-        update_curve: VardiffUpdateCurve,
-    ) -> Result<Self, VardiffError> {
-        Self::new_with_clock_and_update_curve(
-            min_allowed_hashrate,
-            Arc::new(SystemClock),
-            update_curve,
-        )
-    }
-
-    /// Creates a new `VardiffState` with a custom clock and explicit update curve.
-    pub fn new_with_clock_and_update_curve(
-        min_allowed_hashrate: f32,
-        clock: Arc<dyn Clock>,
-        update_curve: VardiffUpdateCurve,
-    ) -> Result<Self, VardiffError> {
         let timestamp_secs = clock.now_secs();
 
         Ok(VardiffState {
@@ -155,7 +84,6 @@ impl VardiffState {
             timestamp_of_last_update: timestamp_secs,
             min_allowed_hashrate,
             clock,
-            update_curve,
         })
     }
 
@@ -163,7 +91,6 @@ impl VardiffState {
     pub fn set_shares_since_last_update(&mut self, shares_since_last_update: u32) {
         self.shares_since_last_update = shares_since_last_update;
     }
-
 }
 
 impl Vardiff for VardiffState {
@@ -191,7 +118,7 @@ impl Vardiff for VardiffState {
 
     /// Bulk-adds `n` shares with a single saturating add. Overrides the default
     /// trait implementation (which calls increment `n` times) for performance
-    /// - the simulation framework calls this with `n` values into the millions
+    /// — the simulation framework calls this with `n` values into the millions
     /// during cold-start ticks, where the loop overhead would dominate.
     fn add_shares(&mut self, n: u32) {
         self.shares_since_last_update = self.shares_since_last_update.saturating_add(n);
@@ -208,8 +135,8 @@ impl Vardiff for VardiffState {
     /// Checks channel performance and potentially updates the hashrate and target.
     ///
     /// It calculates the realized share rate since the last update. If the
-    /// deviation from the target rate is significant enough under the configured
-    /// six-parameter update curves, it estimates a new hashrate and applies it.
+    /// deviation from the target rate is significant enough (based on internal,
+    /// time-sensitive thresholds), it estimates a new hashrate and applies it.
     ///
     /// It returns `Ok(Some(new_hashrate))` when an update occurs,
     /// `Ok(None)` when conditions don't warrant an update, and
@@ -232,7 +159,11 @@ impl Vardiff for VardiffState {
 
         debug!(
             target: "vardiff",
-            "Hashrate update check triggered:\n            - Elapsed time: {}s\n            - Shares since last update: {}\n            - Realized shares per minute: {:.4}\n            - Current miner target: {:?}",
+            "Hashrate update check triggered:
+            - Elapsed time: {}s
+            - Shares since last update: {}
+            - Realized shares per minute: {:.4}
+            - Current miner target: {:?}",
             delta_time,
             self.shares_since_last_update,
             realized_share_per_min,
@@ -254,26 +185,32 @@ impl Vardiff for VardiffState {
         };
 
         let hashrate_delta = new_hashrate - hashrate;
-        let hashrate_delta_percentage = if hashrate > 0.0 {
-            (hashrate_delta.abs() / hashrate) * 100.0
-        } else {
-            100.0
-        };
-
-        let required_delta_percentage = self.update_curve.required_delta_pct(delta_time);
+        let hashrate_delta_percentage = (hashrate_delta.abs() / hashrate) * 100.0;
 
         debug!(
             target: "vardiff",
-            "Vardiff threshold check: delta={:.2}% required={:.2}% elapsed={}s",
+            "Calculated new hashrate: {:.2} H/s (Δ {:.2}%, previous {:.2} H/s)",
+            new_hashrate,
             hashrate_delta_percentage,
-            required_delta_percentage,
-            delta_time,
+            hashrate,
         );
 
-        if hashrate_delta_percentage < required_delta_percentage {
+        let should_update = match hashrate_delta_percentage {
+            pct if pct >= 100.0 => true,
+            pct if pct >= 60.0 && delta_time >= 60 => true,
+            pct if pct >= 50.0 && delta_time >= 120 => true,
+            pct if pct >= 45.0 && delta_time >= 180 => true,
+            pct if pct >= 30.0 && delta_time >= 240 => true,
+            pct if pct >= 15.0 && delta_time >= 300 => true,
+            _ => false,
+        };
+
+        if !should_update {
             return Ok(None);
         }
 
+        // realized_share_per_min is 0.0 when d.difficulty_mgmt.shares_since_last_update is 0
+        // so it's safe to compare realized_share_per_min with == 0.0
         if realized_share_per_min == 0.0 {
             new_hashrate = match delta_time {
                 dt if dt <= 30 => hashrate / 1.5,
@@ -287,17 +224,15 @@ impl Vardiff for VardiffState {
                 _ => hashrate * 3.0,
             };
         }
-
         if new_hashrate < self.min_allowed_hashrate {
             debug!(
                 target: "vardiff",
-                "New hashrate {:.2} H/s below minimum threshold {:.2} H/s - clamping",
+                "New hashrate {:.2} H/s below minimum threshold {:.2} H/s — clamping",
                 new_hashrate,
                 self.min_allowed_hashrate
             );
             new_hashrate = self.min_allowed_hashrate;
         }
-
         self.reset_counter()?;
 
         Ok(Some(new_hashrate))

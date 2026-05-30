@@ -5,6 +5,7 @@ use std::fmt::Debug;
 pub mod classic;
 pub mod clock;
 pub mod error;
+pub mod vanilla;
 #[cfg(test)]
 pub mod test;
 
