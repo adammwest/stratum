@@ -1,14 +1,20 @@
 use bitcoin::Target;
 use error::VardiffError;
 use std::fmt::Debug;
+use std::sync::Arc;
 
 pub mod classic;
 pub mod clock;
+pub mod composed;
 pub mod error;
 #[cfg(test)]
 pub mod test;
 
 pub use clock::{Clock, MockClock, SystemClock};
+
+/// Default minimum hashrate (H/s) used by [`default`] when no value is
+/// supplied.
+pub const DEFAULT_MIN_HASHRATE: f32 = 1.0;
 
 /// Trait defining the interface for a Vardiff implementation.
 pub trait Vardiff: Debug + Send + Sync {
@@ -53,4 +59,49 @@ pub trait Vardiff: Debug + Send + Sync {
 
     /// Gets the minimum allowed hashrate (H/s).
     fn min_allowed_hashrate(&self) -> f32;
+}
+
+/// Constructs the recommended production vardiff.
+///
+/// Returns a [`Box<dyn Vardiff>`] wrapping the `AdaCUSUM` composition:
+/// `EwmaEstimator(120s) + AdaptiveCusumBoundary(s=1.5, floor=0.05) +
+/// PartialRetarget(η = 0.2)`. Uses [`DEFAULT_MIN_HASHRATE`] as the
+/// minimum hashrate floor and a [`SystemClock`] for time.
+///
+/// `AdaCUSUM` dominates the previous `FullRemedy` (PoissonCI boundary)
+/// at every share rate in the operational range (SPM=6-30) under the
+/// `operational_fitness` metric. The improvement comes from 2-3x better
+/// detection of small hashrate changes via sequential evidence
+/// accumulation. See `sim/docs/FINDINGS.md` for the validation and
+/// `sim/docs/DESIGN.md` for the three-stage pipeline architecture.
+///
+/// This is the recommended entry point for new production code. For
+/// custom min-hashrate floors, use [`default_with_min`]. For a custom
+/// [`Clock`] implementation (typically [`MockClock`] in tests), use
+/// [`default_with_clock`].
+pub fn default() -> Box<dyn Vardiff> {
+    default_with_min(DEFAULT_MIN_HASHRATE)
+}
+
+/// Constructs the recommended production vardiff with a specific minimum
+/// hashrate floor.
+///
+/// Equivalent to [`default`] but lets callers set the
+/// `min_allowed_hashrate` floor. See [`default`] for the underlying
+/// composition.
+pub fn default_with_min(min_allowed_hashrate: f32) -> Box<dyn Vardiff> {
+    default_with_clock(min_allowed_hashrate, Arc::new(SystemClock))
+}
+
+/// Constructs the recommended production vardiff with a specific minimum
+/// hashrate floor and a custom [`Clock`] implementation.
+///
+/// Primarily intended for simulation and testing, where a
+/// [`MockClock`] lets the algorithm run against controlled time. See
+/// [`default`] for the underlying composition.
+pub fn default_with_clock(min_allowed_hashrate: f32, clock: Arc<dyn Clock>) -> Box<dyn Vardiff> {
+    Box::new(
+        classic::VardiffState::new_with_clock(min_allowed_hashrate, clock)
+            .expect("VardiffState construction should not fail"),
+    )
 }

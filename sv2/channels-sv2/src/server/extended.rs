@@ -57,7 +57,14 @@ use bitcoin::{
     transaction::TxOut,
     CompactTarget, Target,
 };
-use mining_sv2::{SetCustomMiningJob, SubmitSharesExtended};
+use mining_sv2::{
+    SetCustomMiningJob, SubmitSharesExtended,
+    ERROR_CODE_OPEN_MINING_CHANNEL_INVALID_NOMINAL_HASHRATE,
+    ERROR_CODE_SUBMIT_SHARES_BAD_EXTRANONCE_SIZE, ERROR_CODE_SUBMIT_SHARES_DIFFICULTY_TOO_LOW,
+    ERROR_CODE_SUBMIT_SHARES_DUPLICATE_SHARE, ERROR_CODE_SUBMIT_SHARES_INVALID_JOB_ID,
+    ERROR_CODE_SUBMIT_SHARES_INVALID_SHARE, ERROR_CODE_SUBMIT_SHARES_STALE_SHARE,
+    ERROR_CODE_UPDATE_CHANNEL_INVALID_NOMINAL_HASHRATE, ERROR_CODE_VERSION_ROLLING_NOT_ALLOWED,
+};
 use std::{collections::HashMap, convert::TryInto, marker::PhantomData};
 use template_distribution_sv2::{NewTemplate, SetNewPrevHash as SetNewPrevHashTdp};
 use tracing::debug;
@@ -73,6 +80,7 @@ use tracing::debug;
 /// - the channel's current target
 /// - the channel's mapping between `job_id` and target
 /// - the channel's nominal hashrate
+/// - whether the channel's nominal hashrate is treated as stable
 /// - the channel's [`JobStore`]
 /// - the channel's [`JobFactory`]
 /// - the channel's [`ShareAccounting`]
@@ -92,6 +100,7 @@ where
     target: Target,
     job_id_to_target: HashMap<u32, Target>,
     nominal_hashrate: f32,
+    stable_hashrate: bool,
     job_store: J,
     job_factory: JobFactory,
     share_accounting: ShareAccounting,
@@ -205,7 +214,9 @@ where
             match hash_rate_to_target(nominal_hashrate.into(), expected_share_per_minute.into()) {
                 Ok(target) => target,
                 Err(_) => {
-                    return Err(ExtendedChannelError::InvalidNominalHashrate);
+                    return Err(ExtendedChannelError::OpenChannelInvalidNominalHashrate(
+                        ERROR_CODE_OPEN_MINING_CHANNEL_INVALID_NOMINAL_HASHRATE,
+                    ));
                 }
             };
 
@@ -240,6 +251,7 @@ where
             target,
             job_id_to_target: HashMap::new(),
             nominal_hashrate,
+            stable_hashrate: false,
             job_store,
             job_factory: JobFactory::new(version_rolling_allowed, pool_tag, miner_tag),
             share_accounting: ShareAccounting::new(share_batch_size),
@@ -340,6 +352,16 @@ where
         self.nominal_hashrate
     }
 
+    /// Sets whether this channel's nominal hashrate should be treated as stable.
+    pub fn set_stable_hashrate(&mut self, stable_hashrate: bool) {
+        self.stable_hashrate = stable_hashrate;
+    }
+
+    /// Returns whether this channel's nominal hashrate is treated as stable.
+    pub fn get_stable_hashrate(&self) -> bool {
+        self.stable_hashrate
+    }
+
     /// Updates the nominal hashrate for this channel.
     pub fn set_nominal_hashrate(&mut self, hashrate: f32) {
         self.nominal_hashrate = hashrate;
@@ -352,7 +374,7 @@ where
     /// If the recomputed target is easier than the effective `requested_max_target`,
     /// the target is clamped to `requested_max_target`.
     ///
-    /// Returns [`ExtendedChannelError::InvalidNominalHashrate`] when
+    /// Returns [`ExtendedChannelError::UpdateChannelInvalidNominalHashrate`] when
     /// `new_nominal_hashrate` cannot be converted into a valid target.
     ///
     /// This can be used in two scenarios:
@@ -372,7 +394,9 @@ where
         ) {
             Ok(target) => target,
             Err(_) => {
-                return Err(ExtendedChannelError::InvalidNominalHashrate);
+                return Err(ExtendedChannelError::UpdateChannelInvalidNominalHashrate(
+                    ERROR_CODE_UPDATE_CHANNEL_INVALID_NOMINAL_HASHRATE,
+                ));
             }
         };
 
@@ -545,15 +569,21 @@ where
         &mut self,
         set_new_prev_hash: SetNewPrevHashTdp<'a>,
     ) -> Result<(), ExtendedChannelError> {
-        // clear the job id to target mapping
-        self.job_id_to_target.clear();
-
         // extended channels dedicated to custom work don't need to keep track of future jobs
         match self.job_store.has_future_jobs() {
             false => {
+                // demote the previously-active job to past so that the subsequent
+                // mark_past_jobs_as_stale call moves it into the stale set. without this,
+                // a late share for the still-active old job would skip the stale check in
+                // validate_share and panic on the missing job_id_to_target entry that we
+                // just cleared.
+                self.job_store.deactivate_job();
                 // explicitly mark past jobs as stale, because we're not going to
                 // do it implicitly via activate_future_job in case this extended channel is doing custom work
                 self.job_store.mark_past_jobs_as_stale();
+                // there is no active job in this branch, so any previous job target
+                // mappings are obsolete after the chain tip update.
+                self.job_id_to_target.clear();
             }
             true => {
                 // try to activate the future job, and also mark past jobs as stale
@@ -563,7 +593,9 @@ where
                 ) {
                     return Err(ExtendedChannelError::TemplateIdNotFound);
                 }
-
+                // clear the job id to target mapping only after a successful activation,
+                // so that an early-return error path does not corrupt channel state.
+                self.job_id_to_target.clear();
                 // associate the new active job with the current target
                 let job_id = self
                     .job_store
@@ -647,12 +679,20 @@ where
         let is_stale_job = self.job_store.get_stale_job(job_id).is_some();
 
         if is_stale_job {
-            return Err(ShareValidationError::Stale);
+            self.share_accounting
+                .increment_rejected_shares(ERROR_CODE_SUBMIT_SHARES_STALE_SHARE);
+            return Err(ShareValidationError::Stale(
+                ERROR_CODE_SUBMIT_SHARES_STALE_SHARE,
+            ));
         }
 
         // if job_id is not active, past or stale, return error
         if !is_active_job && !is_past_job && !is_stale_job {
-            return Err(ShareValidationError::InvalidJobId);
+            self.share_accounting
+                .increment_rejected_shares(ERROR_CODE_SUBMIT_SHARES_INVALID_JOB_ID);
+            return Err(ShareValidationError::InvalidJobId(
+                ERROR_CODE_SUBMIT_SHARES_INVALID_JOB_ID,
+            ));
         };
 
         let job = if is_active_job {
@@ -668,15 +708,21 @@ where
                 .get_stale_job(job_id)
                 .expect("stale job must exist")
         };
-
-        let job_target = self
-            .job_id_to_target
-            .get(&job_id)
-            .expect("job target must exist");
+        let Some(job_target) = self.job_id_to_target.get(&job_id) else {
+            self.share_accounting
+                .increment_rejected_shares(ERROR_CODE_SUBMIT_SHARES_INVALID_JOB_ID);
+            return Err(ShareValidationError::InvalidJobId(
+                ERROR_CODE_SUBMIT_SHARES_INVALID_JOB_ID,
+            ));
+        };
 
         let extranonce_size = share.extranonce.inner_as_ref().len();
         if extranonce_size != self.rollable_extranonce_size as usize {
-            return Err(ShareValidationError::BadExtranonceSize);
+            self.share_accounting
+                .increment_rejected_shares(ERROR_CODE_SUBMIT_SHARES_BAD_EXTRANONCE_SIZE);
+            return Err(ShareValidationError::BadExtranonceSize(
+                ERROR_CODE_SUBMIT_SHARES_BAD_EXTRANONCE_SIZE,
+            ));
         }
 
         let extranonce_prefix = job.get_extranonce_prefix();
@@ -695,7 +741,9 @@ where
             full_extranonce.as_ref(),
             &job.get_merkle_path().inner_as_ref(),
         )
-        .ok_or(ShareValidationError::Invalid)?
+        .ok_or(ShareValidationError::Invalid(
+            ERROR_CODE_SUBMIT_SHARES_INVALID_SHARE,
+        ))?
         .try_into()
         .expect("merkle root must be 32 bytes");
 
@@ -713,7 +761,11 @@ where
             // This is done by checking if the version & 0x1fffe000 == 0
             // ref: https://github.com/bitcoin/bips/blob/master/bip-0320.mediawiki
             if (share.version & 0x1fffe000) != 0 {
-                return Err(ShareValidationError::VersionRollingNotAllowed);
+                self.share_accounting
+                    .increment_rejected_shares(ERROR_CODE_VERSION_ROLLING_NOT_ALLOWED);
+                return Err(ShareValidationError::VersionRollingNotAllowed(
+                    ERROR_CODE_VERSION_ROLLING_NOT_ALLOWED,
+                ));
             }
         }
 
@@ -752,7 +804,11 @@ where
                 .share_accounting
                 .is_share_seen(share_hash.to_raw_hash())
             {
-                return Err(ShareValidationError::DuplicateShare);
+                self.share_accounting
+                    .increment_rejected_shares(ERROR_CODE_SUBMIT_SHARES_DUPLICATE_SHARE);
+                return Err(ShareValidationError::DuplicateShare(
+                    ERROR_CODE_SUBMIT_SHARES_DUPLICATE_SHARE,
+                ));
             }
             self.share_accounting.update_share_accounting(
                 job_target.difficulty_float(),
@@ -792,7 +848,11 @@ where
                 .share_accounting
                 .is_share_seen(share_hash.to_raw_hash())
             {
-                return Err(ShareValidationError::DuplicateShare);
+                self.share_accounting
+                    .increment_rejected_shares(ERROR_CODE_SUBMIT_SHARES_DUPLICATE_SHARE);
+                return Err(ShareValidationError::DuplicateShare(
+                    ERROR_CODE_SUBMIT_SHARES_DUPLICATE_SHARE,
+                ));
             }
 
             self.share_accounting.update_share_accounting(
@@ -806,7 +866,11 @@ where
 
             Ok(ShareValidationResult::Valid(share_hash.to_raw_hash()))
         } else {
-            Err(ShareValidationError::DoesNotMeetTarget)
+            self.share_accounting
+                .increment_rejected_shares(ERROR_CODE_SUBMIT_SHARES_DIFFICULTY_TOO_LOW);
+            Err(ShareValidationError::DoesNotMeetTarget(
+                ERROR_CODE_SUBMIT_SHARES_DIFFICULTY_TOO_LOW,
+            ))
         }
     }
 }
@@ -828,7 +892,10 @@ mod tests {
     };
     use binary_sv2::{Sv2Option, U256};
     use bitcoin::{transaction::TxOut, Amount, ScriptBuf, Target};
-    use mining_sv2::{NewExtendedMiningJob, SetCustomMiningJob, SubmitSharesExtended};
+    use mining_sv2::{
+        NewExtendedMiningJob, SetCustomMiningJob, SubmitSharesExtended,
+        ERROR_CODE_SUBMIT_SHARES_DIFFICULTY_TOO_LOW,
+    };
     use std::convert::TryInto;
     use template_distribution_sv2::{NewTemplate, SetNewPrevHash};
 
@@ -1293,7 +1360,7 @@ mod tests {
         let res = channel.validate_share(share_valid_block);
         assert!(matches!(
             res.unwrap_err(),
-            ShareValidationError::DuplicateShare
+            ShareValidationError::DuplicateShare(_)
         ));
         assert_eq!(channel.get_share_accounting().get_blocks_found(), 1);
     }
@@ -1406,8 +1473,15 @@ mod tests {
 
         assert!(matches!(
             res.unwrap_err(),
-            ShareValidationError::DoesNotMeetTarget
+            ShareValidationError::DoesNotMeetTarget(_)
         ));
+        assert_eq!(
+            channel
+                .get_share_accounting()
+                .get_rejected_shares()
+                .get(ERROR_CODE_SUBMIT_SHARES_DIFFICULTY_TOO_LOW),
+            Some(&1)
+        );
     }
 
     #[test]
@@ -1535,7 +1609,7 @@ mod tests {
         let res = channel.validate_share(repeated_share);
 
         // assert duplicate share is rejected
-        assert!(matches!(res, Err(ShareValidationError::DuplicateShare)));
+        assert!(matches!(res, Err(ShareValidationError::DuplicateShare(_))));
     }
 
     #[test]
@@ -1641,7 +1715,7 @@ mod tests {
         assert!(result.is_err());
         assert!(matches!(
             result,
-            Err(ExtendedChannelError::InvalidNominalHashrate)
+            Err(ExtendedChannelError::UpdateChannelInvalidNominalHashrate(_))
         ));
 
         // Create a not so permissive max_target so we can test a target that exceeds it
@@ -2010,5 +2084,122 @@ mod tests {
             result.unwrap_err(),
             ExtendedChannelError::InvalidJobOrigin
         ));
+    }
+
+    #[test]
+    fn test_set_new_prev_hash_without_future_jobs_marks_active_as_stale() {
+        // Regression test: when on_set_new_prev_hash takes the no-future-jobs branch,
+        // the previously-active job must be moved to stale so that late shares are
+        // rejected as Stale instead of panicking on a missing job_id_to_target entry.
+        let channel_id = 1;
+        let user_identity = "user_identity".to_string();
+        let extranonce_prefix = [
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+        ]
+        .to_vec();
+        let max_target = Target::from_le_bytes([0xff; 32]);
+        let expected_share_per_minute = 1.0;
+        let nominal_hashrate = 100.0;
+        let version_rolling_allowed = true;
+        let rollable_extranonce_size = 8u16;
+        let share_batch_size = 100;
+        let job_store = DefaultJobStore::new();
+
+        let mut channel = ExtendedChannel::new(
+            channel_id,
+            user_identity,
+            ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
+            max_target,
+            nominal_hashrate,
+            version_rolling_allowed,
+            rollable_extranonce_size,
+            share_batch_size,
+            expected_share_per_minute,
+            job_store,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let template_id = 1;
+        let template = NewTemplate {
+            template_id,
+            future_template: false,
+            version: 536870912,
+            coinbase_tx_version: 2,
+            coinbase_prefix: vec![82, 0].try_into().unwrap(),
+            coinbase_tx_input_sequence: 4294967295,
+            coinbase_tx_value_remaining: SATS_AVAILABLE_IN_TEMPLATE,
+            coinbase_tx_outputs_count: 1,
+            coinbase_tx_outputs: vec![
+                0, 0, 0, 0, 0, 0, 0, 0, 38, 106, 36, 170, 33, 169, 237, 226, 246, 28, 63, 113, 209,
+                222, 253, 63, 169, 153, 223, 163, 105, 83, 117, 92, 105, 6, 137, 121, 153, 98, 180,
+                139, 235, 216, 54, 151, 78, 140, 249,
+            ]
+            .try_into()
+            .unwrap(),
+            coinbase_tx_locktime: 0,
+            merkle_path: vec![].try_into().unwrap(),
+        };
+
+        let pubkey_hash = [
+            235, 225, 183, 220, 194, 147, 204, 170, 14, 231, 67, 168, 111, 137, 223, 130, 88, 194,
+            8, 252,
+        ];
+        let mut script_bytes = vec![0];
+        script_bytes.push(20);
+        script_bytes.extend_from_slice(&pubkey_hash);
+        let script = ScriptBuf::from(script_bytes);
+        let coinbase_reward_outputs = vec![TxOut {
+            value: Amount::from_sat(SATS_AVAILABLE_IN_TEMPLATE),
+            script_pubkey: script,
+        }];
+
+        let ntime = 1745596910;
+        let prev_hash = [
+            154, 124, 239, 231, 221, 122, 160, 173, 164, 175, 87, 33, 74, 214, 191, 107, 73, 34, 0,
+            162, 227, 16, 44, 40, 33, 73, 0, 0, 0, 0, 0, 0,
+        ]
+        .into();
+        let n_bits = 453040064;
+        let chain_tip = ChainTip::new(prev_hash, n_bits, ntime);
+        channel.set_chain_tip(chain_tip);
+
+        channel
+            .on_new_template(template.clone(), coinbase_reward_outputs)
+            .unwrap();
+
+        let active_job_id = channel.get_active_job().unwrap().get_job_id();
+        assert!(!channel.job_store.has_future_jobs());
+
+        // Chain tip flip with no matching future job (typical of custom-work / JD flow
+        // where the channel never queues future jobs from a TDP NewTemplate).
+        let new_prev_hash = SetNewPrevHash {
+            template_id: 999,
+            prev_hash: [
+                200, 53, 253, 129, 214, 31, 43, 84, 179, 58, 58, 76, 128, 213, 24, 53, 38, 144,
+                205, 88, 172, 20, 251, 22, 217, 141, 21, 221, 21, 0, 0, 0,
+            ]
+            .into(),
+            header_timestamp: ntime + 600,
+            n_bits,
+            target: [0xff; 32].into(),
+        };
+
+        channel.on_set_new_prev_hash(new_prev_hash).unwrap();
+
+        // A miner's in-flight share for the now-old job arrives after the tip flip.
+        let late_share = SubmitSharesExtended {
+            channel_id,
+            sequence_number: 0,
+            job_id: active_job_id,
+            nonce: 0,
+            ntime: 1745596971,
+            version: 536870912,
+            extranonce: vec![1, 0, 0, 0, 0, 0, 0, 0].try_into().unwrap(),
+        };
+
+        let res = channel.validate_share(late_share);
+        assert!(matches!(res, Err(ShareValidationError::Stale(_))));
     }
 }
