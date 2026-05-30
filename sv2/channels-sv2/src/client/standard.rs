@@ -26,6 +26,8 @@ use bitcoin::{
 };
 use mining_sv2::{
     NewExtendedMiningJob, NewMiningJob, SetNewPrevHash as SetNewPrevHashMp, SubmitSharesStandard,
+    ERROR_CODE_SUBMIT_SHARES_DIFFICULTY_TOO_LOW, ERROR_CODE_SUBMIT_SHARES_DUPLICATE_SHARE,
+    ERROR_CODE_SUBMIT_SHARES_INVALID_JOB_ID, ERROR_CODE_SUBMIT_SHARES_STALE_SHARE,
 };
 use tracing::debug;
 
@@ -188,7 +190,7 @@ impl<'a> StandardChannel<'a> {
     pub fn on_share_acknowledgement(
         &mut self,
         new_submits_accepted_count: u32,
-        new_shares_sum: f64,
+        new_shares_sum: u64,
     ) {
         self.share_accounting
             .on_share_acknowledgement(new_submits_accepted_count, new_shares_sum);
@@ -310,7 +312,9 @@ impl<'a> StandardChannel<'a> {
         let is_stale_job = self.stale_jobs.contains_key(&job_id);
 
         if is_stale_job {
-            return Err(ShareValidationError::Stale);
+            return Err(ShareValidationError::Stale(
+                ERROR_CODE_SUBMIT_SHARES_STALE_SHARE,
+            ));
         }
 
         let job = if is_active_job {
@@ -318,7 +322,9 @@ impl<'a> StandardChannel<'a> {
         } else if is_past_job {
             self.past_jobs.get(&job_id).expect("past job must exist")
         } else {
-            return Err(ShareValidationError::InvalidJobId);
+            return Err(ShareValidationError::InvalidJobId(
+                ERROR_CODE_SUBMIT_SHARES_INVALID_JOB_ID,
+            ));
         };
 
         let merkle_root: [u8; 32] = job
@@ -372,10 +378,15 @@ impl<'a> StandardChannel<'a> {
                 .share_accounting
                 .is_share_seen(share_hash.to_raw_hash())
             {
-                return Err(ShareValidationError::DuplicateShare);
+                return Err(ShareValidationError::DuplicateShare(
+                    ERROR_CODE_SUBMIT_SHARES_DUPLICATE_SHARE,
+                ));
             }
-            self.share_accounting
-                .track_validated_share(share.sequence_number, share_hash.to_raw_hash());
+            self.share_accounting.track_validated_share(
+                share.sequence_number,
+                share_hash.to_raw_hash(),
+                job_target.difficulty_float(),
+            );
             self.share_accounting.increment_blocks_found();
             return Ok(ShareValidationResult::BlockFound(share_hash.to_raw_hash()));
         }
@@ -386,11 +397,16 @@ impl<'a> StandardChannel<'a> {
                 .share_accounting
                 .is_share_seen(share_hash.to_raw_hash())
             {
-                return Err(ShareValidationError::DuplicateShare);
+                return Err(ShareValidationError::DuplicateShare(
+                    ERROR_CODE_SUBMIT_SHARES_DUPLICATE_SHARE,
+                ));
             }
 
-            self.share_accounting
-                .track_validated_share(share.sequence_number, share_hash.to_raw_hash());
+            self.share_accounting.track_validated_share(
+                share.sequence_number,
+                share_hash.to_raw_hash(),
+                job_target.difficulty_float(),
+            );
 
             // update the best diff
             self.share_accounting.update_best_diff(share_hash_as_diff);
@@ -398,7 +414,9 @@ impl<'a> StandardChannel<'a> {
             return Ok(ShareValidationResult::Valid(share_hash.to_raw_hash()));
         }
 
-        Err(ShareValidationError::DoesNotMeetTarget)
+        Err(ShareValidationError::DoesNotMeetTarget(
+            ERROR_CODE_SUBMIT_SHARES_DIFFICULTY_TOO_LOW,
+        ))
     }
 }
 
@@ -604,7 +622,7 @@ mod tests {
         let res = channel.validate_share(share_valid_block);
         assert!(matches!(
             res.unwrap_err(),
-            ShareValidationError::DuplicateShare
+            ShareValidationError::DuplicateShare(_)
         ));
         assert_eq!(channel.get_share_accounting().get_blocks_found(), 1);
     }
@@ -681,7 +699,7 @@ mod tests {
 
         assert!(matches!(
             res.unwrap_err(),
-            ShareValidationError::DoesNotMeetTarget
+            ShareValidationError::DoesNotMeetTarget(_)
         ));
     }
 
